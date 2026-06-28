@@ -224,6 +224,37 @@ Each kustomize patch maps to one upstream PR:
 | `fix-api-wait-keycloak` | Init container waiting for Keycloak OIDC |
 | `fix-api-trust-ca` | CA bundle init container for internal TLS trust |
 
+## Post-Deploy Steps
+
+After `make deploy-cloud`, these manual steps are required:
+
+### Patch Keycloak Route with CA Certificate
+
+The Keycloak route uses `reencrypt` TLS but the Helm template does not
+inject the `destinationCACertificate`. Without it, the OpenShift router
+cannot verify Keycloak's backend TLS and the route returns 503. Run:
+
+```bash
+CA=$(oc get secret nico-root-ca-secret -n cert-manager \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d)
+
+oc patch route keycloak -n rhbk-operator \
+  --type merge -p "$(jq -n --arg ca "$CA" '{"spec":{"tls":{"destinationCACertificate":$ca}}}')"
+```
+
+### Bootstrap the Organization
+
+The API requires an Infrastructure Provider and Tenant before resource
+endpoints work. These GET endpoints auto-create the entities:
+
+```bash
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/test-org/nico/infrastructure-provider/current"
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/test-org/nico/tenant/current"
+```
+
 ## Conventions
 
 - Apache 2.0 license header on all files
