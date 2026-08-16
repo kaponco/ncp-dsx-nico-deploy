@@ -28,6 +28,7 @@ POST_RENDERER_DIR := $(CURDIR)/helm/plugins/kustomize-post-renderer
 POST_RENDERER := kustomize-post-renderer
 export PATH := $(POST_RENDERER_DIR):$(PATH)
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
+INFRA_CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/infra-cloud
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
 
 # =============================================================================
@@ -74,7 +75,8 @@ helm-template:
 	@echo "--- prereqs ---"
 	helm template prereqs helm/nvidia-infra-controller-prereqs/
 	@echo "--- infra-cloud ---"
-	helm template infra-cloud helm/infra-cloud/ -n nico-rest
+	helm template infra-cloud helm/infra-cloud/ -n nico-rest \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 	@echo "--- temporal ---"
 	helm template temporal $(NICO_REST_CHART)/../../../temporal-helm/temporal -n nico-rest \
 		-f helm/values/temporal.yaml 2>/dev/null || \
@@ -105,7 +107,8 @@ deploy-prereqs:
 deploy-cloud-infra: helm-dep-build
 	helm upgrade --install -n nico-rest nico-rest-infra \
 		helm/infra-cloud/ \
-		--create-namespace --wait --timeout 10m
+		--create-namespace --wait --timeout 10m \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 
 deploy-cloud:
 	helm upgrade --install -n nico-rest nico-rest \
@@ -273,7 +276,8 @@ CRC_VAULT_OVERRIDES := --set vault.server.ha.enabled=false \
 deploy-cloud-infra-crc: helm-dep-build
 	helm upgrade --install -n nico-rest nico-rest-infra \
 		helm/infra-cloud/ \
-		--create-namespace --wait --timeout 10m
+		--create-namespace --wait --timeout 10m \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 
 deploy-site-infra-crc: helm-dep-build
 	helm upgrade --install -n nico-system nico-site-infra \

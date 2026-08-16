@@ -38,6 +38,11 @@ nico-api:
   siteConfig:
     enabled: true
     nicoApiSiteConfig: |
+      bypass_rbac = true
+
+      [auth]
+      permissive_mode = true
+
       [auth.trust]
       spiffe_trust_domain = "nico.local"
       spiffe_service_base_paths = ["/nico-system/sa/", "/default/sa/", "/elektra-site-agent/sa/"]
