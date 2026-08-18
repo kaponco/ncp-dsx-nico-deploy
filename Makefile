@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: docker-build-ubi docker-push-ubi helm-dep-build helm-lint helm-template
+.PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
 .PHONY: deploy-site-infra vault-init deploy-site deploy-site-agent deploy-flow
@@ -47,11 +47,30 @@ docker-build-ubi:
 			-f $(DOCKERFILE_DIR)/Dockerfile.$$img $(UPSTREAM)/rest-api; \
 	done
 
+# nico-core/nico-admin-cli build on UBI and need a live RHEL subscription to
+# `dnf install rust-toolset` mid-build (see Dockerfile.nico-core) — unlike the
+# plain-Debian machine-a-tron image, there's no way around this. Provide your
+# own RHSM org ID / activation key as plain files (never as --build-arg, which
+# would bake them into image history); the Dockerfile mounts them as ephemeral
+# BuildKit secrets that never touch a layer.
+RHSM_ORG_FILE ?= /tmp/rhsm_org
+RHSM_ACTIVATIONKEY_FILE ?= /tmp/rhsm_activationkey
+
 docker-build-core:
-	podman build -t $(IMAGE_REGISTRY)/nico-core:$(IMAGE_TAG) \
+	podman build \
+		--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
+		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
+		-t $(IMAGE_REGISTRY)/nico-core:$(IMAGE_TAG) \
 		-f $(DOCKERFILE_DIR)/Dockerfile.nico-core $(UPSTREAM)
-	podman build -t $(IMAGE_REGISTRY)/nico-admin-cli:$(IMAGE_TAG) \
+	podman build \
+		--secret id=rhsm_org,src=$(RHSM_ORG_FILE) \
+		--secret id=rhsm_activationkey,src=$(RHSM_ACTIVATIONKEY_FILE) \
+		-t $(IMAGE_REGISTRY)/nico-admin-cli:$(IMAGE_TAG) \
 		-f $(DOCKERFILE_DIR)/Dockerfile.nico-admin-cli $(UPSTREAM)
+
+docker-push-core:
+	podman push $(IMAGE_REGISTRY)/nico-core:$(IMAGE_TAG)
+	podman push $(IMAGE_REGISTRY)/nico-admin-cli:$(IMAGE_TAG)
 
 docker-push-ubi:
 	@for img in nico-rest-api nico-rest-workflow nico-rest-site-manager nico-rest-site-agent \
