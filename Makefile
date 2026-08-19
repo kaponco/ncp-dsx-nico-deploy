@@ -11,10 +11,11 @@
 UPSTREAM ?= helm/vendor/infra-controller
 
 # Upstream chart paths
-NICO_REST_CHART := $(UPSTREAM)/rest-api/helm/charts/nico-rest
+NICO_REST_CHART := $(UPSTREAM)/helm/rest/nico-rest
 NICO_CORE_CHART := $(UPSTREAM)/helm
-NICO_SITE_AGENT_CHART := $(UPSTREAM)/rest-api/helm/charts/nico-rest-site-agent
+NICO_SITE_AGENT_CHART := $(UPSTREAM)/helm/rest/nico-rest-site-agent
 NICO_FLOW_CHART := $(UPSTREAM)/helm/charts/nico-flow
+NICO_TEMPORAL_CHART := $(UPSTREAM)/rest-api/temporal-helm/temporal
 
 # Image configuration
 IMAGE_REGISTRY ?= quay.io/fdupont-redhat
@@ -96,8 +97,10 @@ build-machine-a-tron:
 # `nico-admin-cli` bundled in the nico-api pod, using its own mounted mTLS
 # client certs. Its default target (carbide-api.forge-system) doesn't exist
 # here, so the connection flags are mandatory. See machine-a-tron-testing-guide.md.
+# NOTE: --api-url replaced --carbide-api upstream (v2.2.0-pr); --carbide-api
+# is gone entirely (--carbide-url is the closest surviving alias).
 NICO_ADMIN_CLI := oc exec -n $(MAT_NAMESPACE) deploy/nico-api -- /opt/nico/nico-admin-cli \
-	--carbide-api https://nico-api.$(MAT_NAMESPACE).svc.cluster.local:1079 \
+	--api-url https://nico-api.$(MAT_NAMESPACE).svc.cluster.local:1079 \
 	--client-cert-path /run/secrets/spiffe.io/tls.crt \
 	--client-key-path /run/secrets/spiffe.io/tls.key \
 	--forge-root-ca-path /run/secrets/spiffe.io/ca.crt
@@ -140,7 +143,7 @@ helm-template:
 	helm template infra-cloud helm/infra-cloud/ -n nico-rest \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 	@echo "--- temporal ---"
-	helm template temporal $(NICO_REST_CHART)/../../../temporal-helm/temporal -n nico-rest \
+	helm template temporal $(NICO_TEMPORAL_CHART) -n nico-rest \
 		-f helm/values/temporal.yaml 2>/dev/null || \
 		echo "(temporal chart not available locally — add repo with: helm repo add temporal https://go.temporal.io/helm-charts)"
 	@echo "--- nico-rest (upstream) ---"
@@ -262,11 +265,29 @@ vault-init:
 	echo "{\"apiVersion\":\"cert-manager.io/v1\",\"kind\":\"ClusterIssuer\",\"metadata\":{\"name\":\"vault-nico-issuer\"},\"spec\":{\"vault\":{\"path\":\"nicoca/sign/nico-cluster\",\"server\":\"https://vault.nico-system.svc:8200\",\"caBundle\":\"$$CA_B64\",\"auth\":{\"kubernetes\":{\"role\":\"cert-manager-nico-issuer\",\"mountPath\":\"/v1/auth/kubernetes\",\"secretRef\":{\"name\":\"vault-nicoca-issuer-token\",\"key\":\"token\"}}}}}}" | oc apply -f - && \
 	echo "=== Vault fully configured ==="
 
+# nico-core image override. The site chart's top-level `global.image` (consumed
+# by the nico-rest-* sub-charts) and the vendored nico-core chart's own required
+# `global.image` collide under Helm's global-value inheritance — any value set
+# under `nico-core.global.image.*` in values.yaml is silently stomped by the
+# site chart's top-level global. The kustomize post-renderer's `images:` block
+# (helm/kustomize/nico-core/kustomization.yaml) is the actual mechanism that
+# fixes up the nico-core image after Helm renders it, so that's what we
+# parameterize here. Defaults match that file, so plain `make deploy-site`
+# is unchanged; override to point at a custom build, e.g.
+# `make deploy-site ... CORE_IMAGE_REGISTRY=quay.io/rh-ee-skapon/nico-core CORE_IMAGE_TAG=latest`.
+CORE_IMAGE_REGISTRY ?= quay.io/fdupont-redhat/nico-core
+CORE_IMAGE_TAG ?= v0.10.3
+
 deploy-site:
+	SITE_KUSTOMIZE_TMP=$$(mktemp -d) && \
+	trap "rm -rf $$SITE_KUSTOMIZE_TMP" EXIT && \
+	cp -r $(SITE_KUSTOMIZE)/* "$$SITE_KUSTOMIZE_TMP/" && \
+	(cd "$$SITE_KUSTOMIZE_TMP" && kustomize edit set image \
+		quay.io/fdupont-redhat:latest=$(CORE_IMAGE_REGISTRY):$(CORE_IMAGE_TAG)) && \
 	helm upgrade --install -n nico-system nico-core \
 		$(NICO_CORE_CHART) --wait --timeout 10m \
 		-f helm/values/nico-core.yaml \
-		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
+		--post-renderer $(POST_RENDERER) --post-renderer-args "$$SITE_KUSTOMIZE_TMP"
 
 # Site configuration
 SITE_NAME ?=

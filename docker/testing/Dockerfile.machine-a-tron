@@ -53,10 +53,9 @@ LABEL name="machine-a-tron" \
       io.k8s.display-name="machine-a-tron" \
       io.k8s.description="NICo Infra Controller bare-metal emulator"
 
-RUN mkdir -p /opt/machine-a-tron/bin /opt/machine-a-tron/templates /tmp/machine-a-tron-data
+RUN mkdir -p /opt/machine-a-tron/bin /tmp/machine-a-tron-data
 
 COPY --from=builder /app/bin/machine-a-tron /opt/machine-a-tron/bin/machine-a-tron
-COPY --from=builder /workspace/crates/machine-a-tron/templates /opt/machine-a-tron/templates
 COPY --from=builder /workspace/crates/bmc-mock/dell_poweredge_r750.tar.gz /opt/machine-a-tron/dell_poweredge_r750.tar.gz
 COPY --from=builder /workspace/crates/bmc-mock/nvidia_dpu.tar.gz /opt/machine-a-tron/nvidia_dpu.tar.gz
 

@@ -22,6 +22,11 @@ global:
 nico-api:
   enabled: true
   replicas: 1
+  # No legacy carbide-api.forge-system clients in this deployment, and we
+  # don't otherwise own/create a forge-system namespace for the alias
+  # Service to live in (createNamespace defaults to false upstream).
+  legacyAlias:
+    enabled: false
   bootArtifactContainers: []
   # Uncomment and configure for your architecture:
   # - name: boot-artifacts-x86-64
@@ -45,6 +50,13 @@ nico-api:
       # forever in Measuring/WaitingForMeasurements.
       attestation_enabled = false
       tpm_required = false
+      # machine-a-tron's simulated Scout agent calls discover_machine from
+      # the pod's real (non-simulated) source IP, which will never match
+      # any DHCP-assigned machine_interface address. Without this, host
+      # discovery permanently fails with "selected interface and discovery
+      # source IP do not belong to the same host" once a host declares a
+      # HostInband interface. Test/dev only — see machine_discovery.rs.
+      allow_insecure_discovery = true
 
       [auth]
       permissive_mode = true
@@ -75,6 +87,18 @@ nico-api:
       type = "admin"
       prefix = "192.168.252.0/24"
       gateway = "192.168.252.1"
+      mtu = 9000
+      reserve_first = 10
+
+      # v2.2.0-pr's machine-a-tron always declares a HostInband ExpectedInterface
+      # for the host-side NIC (crates/machine-a-tron/src/machine_a_tron.rs), so a
+      # host_inband segment is now required for the base NoDpu flow, not just
+      # tenant allocation. Must match machine-a-tron's host_inband_dhcp_relay_address
+      # (see kustomize/machine-a-tron.yaml).
+      [networks.hostinband]
+      type = "hostinband"
+      prefix = "192.168.253.0/24"
+      gateway = "192.168.253.1"
       mtu = 9000
       reserve_first = 10
 

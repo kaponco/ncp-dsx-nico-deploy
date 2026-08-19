@@ -171,7 +171,7 @@ the connection flags are mandatory):
 ```bash
 CLI() {
   oc exec -n nico-system deploy/nico-api -- /opt/nico/nico-admin-cli \
-    --carbide-api https://nico-api.nico-system.svc.cluster.local:1079 \
+    --api-url https://nico-api.nico-system.svc.cluster.local:1079 \
     --client-cert-path /run/secrets/spiffe.io/tls.crt \
     --client-key-path /run/secrets/spiffe.io/tls.key \
     --forge-root-ca-path /run/secrets/spiffe.io/ca.crt \

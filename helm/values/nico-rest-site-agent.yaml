@@ -37,9 +37,15 @@ nico-rest-site-agent:
     NICO_ADDRESS: "nico-api:1079"
     NICO_SEC_OPT: "0"
     CORE_GRPC_ADDRESS: "nico-api:1079"
-    CORE_GRPC_CA_CERT_PATH: "/etc/nico/ca.crt"
-    CORE_GRPC_CLIENT_CERT_PATH: "/etc/nico/tls.crt"
-    CORE_GRPC_CLIENT_KEY_PATH: "/etc/nico/tls.key"
+    CORE_GRPC_CA_CERT_PATH: "/etc/core-grpc/ca.crt"
+    CORE_GRPC_CLIENT_CERT_PATH: "/etc/core-grpc/tls.crt"
+    CORE_GRPC_CLIENT_KEY_PATH: "/etc/core-grpc/tls.key"
+    # This site profile has no nico-flow (rack power/firmware) deployment —
+    # the default flow.flow.svc.cluster.local target doesn't exist here.
+    # Leaving Flow gRPC enabled hits an upstream bug where a failed first
+    # connection attempt panics on retry (duplicate Prometheus collector
+    # registration in flowgrpc.makeGrpcClientMetrics), crash-looping the pod.
+    FLOW_GRPC_ENABLED: "false"
     CLUSTER_ID: ""
     TEMPORAL_HOST: "temporal-frontend.nico-rest"
     TEMPORAL_PORT: "7233"

@@ -173,11 +173,11 @@ Only relevant after deploying the site profile. It's bundled in the
 `nico-api` pod, which has its own client certs mounted at
 `/run/secrets/spiffe.io/` — the CLI's *default* target is
 `carbide-api.forge-system`, a dev-environment address that doesn't exist
-here, so the `--carbide-api`/cert flags below are not optional:
+here, so the `--api-url`/cert flags below are not optional:
 
 ```bash
 oc exec -n nico-system deploy/nico-api -- /opt/nico/nico-admin-cli \
-  --carbide-api https://nico-api.nico-system.svc.cluster.local:1079 \
+  --api-url https://nico-api.nico-system.svc.cluster.local:1079 \
   --client-cert-path /run/secrets/spiffe.io/tls.crt \
   --client-key-path /run/secrets/spiffe.io/tls.key \
   --forge-root-ca-path /run/secrets/spiffe.io/ca.crt \

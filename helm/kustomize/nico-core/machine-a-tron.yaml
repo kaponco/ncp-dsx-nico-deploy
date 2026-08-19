@@ -38,9 +38,10 @@ data:
     subnets_per_vpc = 0
     dpu_reboot_delay = 10
     host_reboot_delay = 10
-    template_dir = "/opt/machine-a-tron/templates"
     oob_dhcp_relay_address = "192.168.2.1"
     admin_dhcp_relay_address = "192.168.252.1"
+    # Must match [networks.hostinband] in nicoApiSiteConfig (values.yaml).
+    host_inband_dhcp_relay_address = "192.168.253.1"
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
