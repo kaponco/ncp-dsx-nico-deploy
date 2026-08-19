@@ -173,7 +173,7 @@ the connection flags are mandatory):
 ```bash
 CLI() {
   oc exec -n nvidia-infra-controller-site deploy/nico-api -- /opt/nico/nico-admin-cli \
-    --carbide-api https://nico-api.nvidia-infra-controller-site.svc.cluster.local:1079 \
+    --api-url https://nico-api.nvidia-infra-controller-site.svc.cluster.local:1079 \
     --client-cert-path /run/secrets/spiffe.io/tls.crt \
     --client-key-path /run/secrets/spiffe.io/tls.key \
     --forge-root-ca-path /run/secrets/spiffe.io/ca.crt \

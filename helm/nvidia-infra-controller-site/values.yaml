@@ -101,9 +101,15 @@ nico-rest-site-agent:
     NICO_ADDRESS: "nico-api.nvidia-infra-controller-site:1079"
     NICO_SEC_OPT: "0"
     CORE_GRPC_ADDRESS: "nico-api.nvidia-infra-controller-site:1079"
-    CORE_GRPC_CA_CERT_PATH: "/etc/nico/ca.crt"
-    CORE_GRPC_CLIENT_CERT_PATH: "/etc/nico/tls.crt"
-    CORE_GRPC_CLIENT_KEY_PATH: "/etc/nico/tls.key"
+    CORE_GRPC_CA_CERT_PATH: "/etc/core-grpc/ca.crt"
+    CORE_GRPC_CLIENT_CERT_PATH: "/etc/core-grpc/tls.crt"
+    CORE_GRPC_CLIENT_KEY_PATH: "/etc/core-grpc/tls.key"
+    # This site profile has no nico-flow (rack power/firmware) deployment —
+    # the default flow.flow.svc.cluster.local target doesn't exist here.
+    # Leaving Flow gRPC enabled hits an upstream bug where a failed first
+    # connection attempt panics on retry (duplicate Prometheus collector
+    # registration in flowgrpc.makeGrpcClientMetrics), crash-looping the pod.
+    FLOW_GRPC_ENABLED: "false"
     CLUSTER_ID: ""
     TEMPORAL_HOST: "temporal-frontend.nvidia-infra-controller-cloud"
     TEMPORAL_PORT: "7233"
@@ -137,6 +143,11 @@ nico-core:
   nico-api:
     enabled: true
     replicas: 1
+    # No legacy carbide-api.forge-system clients in this deployment, and we
+    # don't otherwise own/create a forge-system namespace for the alias
+    # Service to live in (createNamespace defaults to false upstream).
+    legacyAlias:
+      enabled: false
     resources:
       requests:
         cpu: 250m
@@ -155,6 +166,13 @@ nico-core:
         # forever in Measuring/WaitingForMeasurements.
         attestation_enabled = false
         tpm_required = false
+        # machine-a-tron's simulated Scout agent calls discover_machine from
+        # the pod's real (non-simulated) source IP, which will never match
+        # any DHCP-assigned machine_interface address. Without this, host
+        # discovery permanently fails with "selected interface and discovery
+        # source IP do not belong to the same host" once a host declares a
+        # HostInband interface. Test/dev only — see machine_discovery.rs.
+        allow_insecure_discovery = true
 
         [auth]
         permissive_mode = true
@@ -185,6 +203,18 @@ nico-core:
         type = "admin"
         prefix = "192.168.252.0/24"
         gateway = "192.168.252.1"
+        mtu = 9000
+        reserve_first = 10
+
+        # v2.2.0-pr's machine-a-tron always declares a HostInband ExpectedInterface
+        # for the host-side NIC (crates/machine-a-tron/src/machine_a_tron.rs), so a
+        # host_inband segment is now required for the base NoDpu flow, not just
+        # tenant allocation. Must match machine-a-tron's host_inband_dhcp_relay_address
+        # (see kustomize/machine-a-tron.yaml).
+        [networks.hostinband]
+        type = "hostinband"
+        prefix = "192.168.253.0/24"
+        gateway = "192.168.253.1"
         mtu = 9000
         reserve_first = 10
 

@@ -85,8 +85,10 @@ build-machine-a-tron:
 # `nico-admin-cli` bundled in the nico-api pod, using its own mounted mTLS
 # client certs. Its default target (carbide-api.forge-system) doesn't exist
 # here, so the connection flags are mandatory. See machine-a-tron-testing-guide.md.
+# NOTE: --api-url replaced --carbide-api upstream (v2.2.0-pr); --carbide-api
+# is gone entirely (--carbide-url is the closest surviving alias).
 NICO_ADMIN_CLI := oc exec -n $(MAT_NAMESPACE) deploy/nico-api -- /opt/nico/nico-admin-cli \
-	--carbide-api https://nico-api.$(MAT_NAMESPACE).svc.cluster.local:1079 \
+	--api-url https://nico-api.$(MAT_NAMESPACE).svc.cluster.local:1079 \
 	--client-cert-path /run/secrets/spiffe.io/tls.crt \
 	--client-key-path /run/secrets/spiffe.io/tls.key \
 	--forge-root-ca-path /run/secrets/spiffe.io/ca.crt
@@ -150,6 +152,19 @@ deploy-cloud: helm-dep-build
 # Site configuration
 SITE_NAME ?=
 SITE_DESCRIPTION ?= Managed by Helm
+
+# nico-core image override. The site chart's top-level `global.image` (consumed
+# by the nico-rest-* sub-charts) and the vendored nico-core chart's own required
+# `global.image` collide under Helm's global-value inheritance — any value set
+# under `nico-core.global.image.*` in values.yaml is silently stomped by the
+# site chart's top-level global. The kustomize post-renderer's `images:` block
+# (helm/nvidia-infra-controller-site/kustomize/kustomization.yaml) is the actual
+# mechanism that fixes up the nico-core image after Helm renders it, so that's
+# what we parameterize here. Defaults match that file, so plain `make deploy-site`
+# is unchanged; override to point at a custom build, e.g.
+# `make deploy-site ... CORE_IMAGE_REGISTRY=quay.io/rh-ee-skapon/nico-core CORE_IMAGE_TAG=latest`.
+CORE_IMAGE_REGISTRY ?= quay.io/fdupont-redhat/nico-core
+CORE_IMAGE_TAG ?= v0.10.3
 KC_URL := https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN)
 API_URL := https://nico-rest-api-nvidia-infra-controller-cloud.$(CLUSTER_DOMAIN)
 
@@ -190,6 +205,11 @@ endif
 			--from-literal=creds-url=https://nico-rest-site-manager.nvidia-infra-controller-cloud:8100/v1/sitecreds \
 			--from-literal=cacert="$$CA_CERT"; \
 	fi && \
+	SITE_KUSTOMIZE_TMP=$$(mktemp -d) && \
+	trap "rm -rf $$SITE_KUSTOMIZE_TMP" EXIT && \
+	cp -r $(SITE_KUSTOMIZE)/* "$$SITE_KUSTOMIZE_TMP/" && \
+	(cd "$$SITE_KUSTOMIZE_TMP" && kustomize edit set image \
+		quay.io/fdupont-redhat:latest=$(CORE_IMAGE_REGISTRY):$(CORE_IMAGE_TAG)) && \
 	echo "=== Deploying site profile ===" && \
 	helm upgrade --install -n nvidia-infra-controller-site nvidia-infra-controller-site \
 		helm/nvidia-infra-controller-site/ \
@@ -198,7 +218,7 @@ endif
 		--set nico-rest-site-agent.envConfig.TEMPORAL_SUBSCRIBE_NAMESPACE=$$SITE_ID_VAL \
 		--set nico-rest-site-agent.envConfig.TEMPORAL_SUBSCRIBE_QUEUE=$$SITE_ID_VAL \
 		--set nico-rest-site-agent.bootstrap.enabled=true \
-		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
+		--post-renderer $(POST_RENDERER) --post-renderer-args "$$SITE_KUSTOMIZE_TMP"
 
 # =============================================================================
 # Full deployment and status
