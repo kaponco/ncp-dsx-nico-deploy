@@ -47,7 +47,7 @@ If a row isn't progressing, jump to Troubleshooting below.
 | NoDpu host reaching `Ready` | Yes |
 | DPU discovery/boot (`os_fsm: DpuAgent`, reaches `MachineUp`) | Yes |
 | DPU-equipped **host** reaching `Ready` | **No** — structural limitation #1 |
-| Tenant instance allocation for a NoDpu host | **No** — structural limitation #2 |
+| Tenant instance allocation for a NoDpu host (flat VPC, `HostInband` segment) | Yes — see [Allocating a NoDpu Host to a Tenant](#allocating-a-nodpu-host-to-a-tenant) |
 | Real DHCP relay/switches, vendor Redfish quirks, real BMC timing, physical network (MetalLB/VLAN/OOB) | No — all simulated |
 
 **Structural limitations (not bugs — don't try to fix these):**
@@ -59,12 +59,14 @@ If a row isn't progressing, jump to Troubleshooting below.
    reboots, calls back into `nico-api`) to set `last_cleanup_time` —
    nothing ever does that for a machine-a-tron host, so it sits in
    `HostCleanup` forever, retried every ~2s with zero progress.
-2. **NoDpu hosts (the ones that do reach `Ready`) can't be allocated to a
-   tenant.** `nico-admin-cli instance allocate`'s machine picker requires a
-   network interface whose PCI vendor string contains "mellanox" (i.e. a
-   DPU/SmartNIC) — which a NoDpu host doesn't have by definition. You can
-   fully discover+Ready a NoDpu host, or fully boot a DPU, but not both on
-   the same host with machine-a-tron alone.
+
+As of `v2.2.0-pr`, machine-a-tron always declares a `HostInband`
+`ExpectedInterface` for the host NIC and simulates a Scout agent well
+enough to complete tenant allocation — the old limitation ("NoDpu hosts
+can't be allocated, `instance allocate`'s picker requires a mellanox-vendor
+NIC") no longer applies. That mellanox check is CLI-side cosmetic filtering
+only; it never reflected a server-side restriction (see `instance allocate
+--flat-vpc-id`, added specifically for zero-DPU machines).
 
 ## Configuration Reference
 
@@ -88,19 +90,21 @@ register_expected_machines = true  # auto-registers mock hosts as ExpectedMachin
 [machines.config]
 host_count = 2
 dpu_per_host_count = 0             # 0 = NoDpu mode; auto-registers dpu_mode: NoDpu
-template_dir = "/opt/machine-a-tron/templates"   # MUST be per-group, not top-level
 oob_dhcp_relay_address = "192.168.2.1"
 admin_dhcp_relay_address = "192.168.252.1"
+# Must match [networks.hostinband] in nicoApiSiteConfig below. Required as
+# of v2.2.0-pr: machine-a-tron always declares a HostInband ExpectedInterface
+# for the host NIC, so without a matching relay + segment, DHCP on that NIC
+# fails with "not of the expected type host_inband" and hosts never reach Ready.
+host_inband_dhcp_relay_address = "192.168.253.1"
 ```
 
-Two gotchas if you edit this:
-- `template_dir` only works inside `[machines.<name>]`. At the top level
-  it's silently ignored and machine-a-tron falls back to a compiled-in
-  path that doesn't exist in the image, failing with `Unable to read
-  dev/machine-a-tron/templates/dhcp_discovery.json`.
-- **ConfigMap changes don't auto-apply** — there's no Reloader watching
-  it. After editing + redeploying, also run:
-  `oc rollout restart deployment/machine-a-tron -n nico-system`
+One gotcha if you edit this: **ConfigMap changes don't auto-apply** — there's
+no Reloader watching it. After editing + redeploying, also run:
+`oc rollout restart deployment/machine-a-tron -n nico-system`
+(older versions of this guide referenced a `template_dir` setting — that
+directory no longer exists in the image as of `v2.2.0-pr` and the field has
+been removed entirely, upstream and here).
 
 For mixed scenarios, add more `[machines.<name>]` sections (each DPU group
 will boot its DPUs but the host still can't reach `Ready`, per limitation
@@ -115,6 +119,12 @@ bypass_rbac = true
 initial_domain_name = "nico.local"   # without this, [networks.*] below are silently never created
 attestation_enabled = false          # no real Scout to send measured-boot/TPM reports
 tpm_required = false
+# machine-a-tron's simulated Scout agent calls discover_machine from the
+# pod's real (non-simulated) source IP, which never matches a DHCP-assigned
+# machine_interface address. Without this, host discovery permanently fails
+# once a host declares a HostInband interface (v2.2.0-pr, always). Test/dev
+# only — see crates/api-core/src/handlers/machine_discovery.rs upstream.
+allow_insecure_discovery = true
 
 [site_explorer]
 run_interval = "10s"
@@ -132,6 +142,13 @@ reserve_first = 10
 type = "admin"
 prefix = "192.168.252.0/24"
 gateway = "192.168.252.1"
+mtu = 9000
+reserve_first = 10
+
+[networks.hostinband]                # must cover mat.toml's host_inband_dhcp_relay_address
+type = "hostinband"                  # NOT "host_inband" — this config enum is lowercase, no underscore
+prefix = "192.168.253.0/24"
+gateway = "192.168.253.1"
 mtu = 9000
 reserve_first = 10
 ```
@@ -201,8 +218,9 @@ https://nico-api.nico-system.svc.cluster.local:1079/admin/machine/<id>/state-his
 
 **What "done" looks like** for a NoDpu host: `STATE: READY`, clean state
 history with no `Failed`/error entries, and `sku generate`/`redfish
-bios-attrs`/`machine-validation on-demand start` all succeed against it.
-`instance allocate` will *not* find it usable (limitation #2).
+bios-attrs`/`machine-validation on-demand start` all succeed against it. See
+[Allocating a NoDpu Host to a Tenant](#allocating-a-nodpu-host-to-a-tenant)
+to go further and assign it to a tenant instance.
 
 Expected flow (`dpu_per_host_count = 0`):
 
@@ -217,11 +235,56 @@ DHCP Discovery → Site Explorer probes bmc-mock via Redfish
 Cold start typically takes 5–10 minutes end-to-end, almost entirely real
 wait timers (not something to interrupt).
 
+## Allocating a NoDpu Host to a Tenant
+
+Once both hosts show `Ready`, they're zero-DPU machines with a materialized
+`HostInband` interface (real IP from `[networks.hostinband]`, e.g.
+`192.168.253.1x`) — allocate them into a tenant via a **flat VPC**. `flat`
+virtualization is specifically for zero-DPU/NIC-mode hosts: tenant instances
+live directly on the underlay via `HostInband` segments, and NICo doesn't
+drive the data plane (routing/ACLs between flat VPCs are the network
+operator's responsibility).
+
+`instance allocate`'s CLI machine-picker help text (and its `mellanox`-vendor
+filtering) predates this — ignore it and use `--flat-vpc-id` with an explicit
+`--machine-id`, which bypasses the picker entirely.
+
+```bash
+# 1. Create a flat VPC (top-level --cloud-unsafe-op is required for any
+#    write that would normally be driven by the cloud REST API/tenant
+#    control plane — we're going straight to Core, bypassing it).
+CLI --cloud-unsafe-op=$USER vpc create \
+  --name nodpu-tenant-vpc --org-id test-org --virtualization-type flat --extended
+# → note the VPC ID from the output
+
+# 2. Find the hostinband segment ID and attach it to the VPC.
+CLI network-segment show   # find the "hostinband" row's Id
+CLI --cloud-unsafe-op=$USER network-segment attach-vpc \
+  --id <hostinband-segment-id> --vpc-id <vpc-id>
+
+# 3. Allocate each Ready host onto the VPC. --os is required; a dummy
+#    inline-iPXE definition is enough (no real Scout will boot it).
+CLI --cloud-unsafe-op=$USER instance allocate \
+  --machine-id <host-machine-id> \
+  --flat-vpc-id <vpc-id> \
+  --prefix-name eth0 \
+  --tenant-org test-org \
+  --os '{"variant":{"Ipxe":{"ipxe_script":"test-script"}},"phone_home_enabled":false,"run_provisioning_instructions_on_every_boot":false}'
+```
+
+`--os`'s JSON shape is the protobuf `InstanceOperatingSystemConfig` message
+(snake_case fields, PascalCase oneof variant tag — `Ipxe`, `OsImageId`, or
+`OperatingSystemId`), not documented in `--help`; the CLI's parse errors are
+the fastest way to iterate on it if this shape ever drifts.
+
+Expect `CLI managed-host show` to report `Assigned/Ready` and `CLI instance
+show` to report `TenantState: Ready`, `ConfigsSynced: Synced`, with an
+`IPAddresses` value from the `hostinband` prefix.
+
 ## Troubleshooting Reference
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Unable to read dev/machine-a-tron/templates/dhcp_discovery.json` | `template_dir` set at top level of `mat.toml` | Move it into the `[machines.<name>]` section |
 | `No network segment defined for relay addresses: [x.x.x.x]` | No `[networks.*]` segment covers that relay IP | Add/fix a `[networks.<name>]` entry whose `prefix` contains it |
 | `No domain configured, skipping initial network creation` | `initial_domain_name` unset | Set it |
 | `Cannot create managed host for explored endpoint with no DPUs: ...disallowed by config` | `site_explorer.allow_zero_dpu_hosts` unset (defaults false) | Set `allow_zero_dpu_hosts = true` |
@@ -235,7 +298,11 @@ wait timers (not something to interrupt).
 | A state is stuck 5+ min with no errors, then suddenly progresses | Real wait timers gate reprocessing | Just wait |
 | Still stuck after 5+ min with nothing logged | Some "wait" states (`Measuring`, `WaitingForLockdown`) only get reprocessed on a `nico-api` restart, not by polling | `oc rollout restart deployment/nico-api -n nico-system` |
 | After restarting machine-a-tron, DHCP fails with `Network segment mismatch for existing MAC address` | Stale `machine_interfaces`/`expected_machine` rows from a previous run | See Resetting the Simulation |
-| `instance allocate` reports "No available machines" for a `Ready` host | No "mellanox"-vendor NIC (limitation #2) | Not fixable with machine-a-tron alone |
+| `instance allocate` reports "No available machines" for a `Ready` host | Its machine-picker filters on a "mellanox"-vendor NIC (cosmetic CLI-side check, not a server-side restriction) | Use `--machine-id` + `--flat-vpc-id` instead of the picker — see [Allocating a NoDpu Host to a Tenant](#allocating-a-nodpu-host-to-a-tenant) |
+| `discover_dhcp` fails with `... which is not of the expected type host_inband` | Host NIC's `ExpectedInterface` (auto-declared by machine-a-tron as of `v2.2.0-pr`) needs a `host_inband`-type segment, but none exists | Add `[networks.hostinband]` (config-file enum, `type = "hostinband"`, no underscore) matching `host_inband_dhcp_relay_address` in `mat.toml` |
+| `discover_machine` fails with `selected interface and discovery source IP do not belong to the same host` (`PermissionDenied`), host stuck in `HostInitializing/WaitingForDiscovery` forever | machine-a-tron's simulated Scout calls from the pod's real IP, not the simulated `HostInband` IP; nico-api can't verify the two match | Set `allow_insecure_discovery = true` in `nicoApiSiteConfig` |
+| `vpc create`/`network-segment attach-vpc`/`instance allocate` fails with `operation not allowed due to potential inconsistencies with cloud database` | These are normally cloud-REST-API-driven operations; nico-admin-cli refuses by default when going straight to Core | Add the top-level `--cloud-unsafe-op=<username>` flag (before the subcommand) |
+| `instance allocate` fails with `argument InstanceConfig::os is missing` | `--os` is required, no default | Pass a JSON `InstanceOperatingSystemConfig` — see [Allocating a NoDpu Host to a Tenant](#allocating-a-nodpu-host-to-a-tenant) for a minimal dummy value |
 | Redfish GET starts 401ing on a previously-`Ready` host after `machine-validation on-demand`/reboot | bmc-mock resets to factory-default credentials across a simulated reboot; nico-api's cached rotated credential no longer matches | `CLI site-explorer clear-error <ip>`; if it re-fails immediately, re-run `make bootstrap-machine-a-tron` |
 | After a full reset + restart, a known MAC gets a straight 401 (not the "factory default" 403) on its first probe | nico-api stores a per-MAC BMC credential in Vault (`machines/bmc/<mac>/root`) on first successful rotation; machine-a-tron reuses the same deterministic MACs every restart, but its `emptyDir`-backed bmc-mock resets to factory-default each time, so the stale Vault entry no longer matches. Deleting `machine_interfaces`/`expected_machine`/`managed_host` does **not** clear this | `CLI credential delete-bmc --kind=bmc-root --mac-address <mac>` for every MAC before restarting — see Resetting the Simulation, step 4 |
 
