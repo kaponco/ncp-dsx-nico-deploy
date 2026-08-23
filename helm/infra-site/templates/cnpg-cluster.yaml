@@ -50,6 +50,12 @@ spec:
     name: nico-site-db-init
   backups:
     pgbackrest:
+      # Pinned to match crunchy-postgres:ubi9-15.15-2550's bundled pgBackRest
+      # (2.56.0) — PGO's OLM subscription auto-upgrades (installPlanApproval:
+      # Automatic), which otherwise drifts this to the operator's current
+      # default and breaks the archive-push protocol handshake against the
+      # pinned postgres image.
+      image: registry.connect.redhat.com/crunchydata/crunchy-pgbackrest:ubi9-2.56.0-2550
       repos:
         - name: repo1
           volume:
