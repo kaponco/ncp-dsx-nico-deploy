@@ -127,16 +127,17 @@ machine-a-tron-status:
 
 helm-dep-build:
 	git submodule update --init
+	helm dependency build helm/infra-cloud/
 	helm dependency build helm/infra-site/
 
-helm-lint:
+helm-lint: helm-dep-build
 	helm lint helm/nvidia-infra-controller-prereqs/
 	helm lint helm/infra-cloud/
 	helm lint helm/infra-site/
 	helm template nico-rest $(NICO_REST_CHART) -n nico-rest -f helm/values/nico-rest.yaml > /dev/null
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system -f helm/values/nico-core.yaml > /dev/null
 
-helm-template:
+helm-template: helm-dep-build
 	@echo "--- prereqs ---"
 	helm template prereqs helm/nvidia-infra-controller-prereqs/
 	@echo "--- infra-cloud ---"
