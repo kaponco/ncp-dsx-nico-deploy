@@ -88,3 +88,12 @@ patches:
     target:
       kind: StatefulSet
       name: nico-dns
+
+  # Expose DNS on Service port 53 -> targetPort 5353. nameservers advertises
+  # this Service IP via DHCP option 6 and clients query it on :53, but nico-dns
+  # binds :5353 (can't bind privileged :53, see nico-core.yaml). The chart's
+  # service template omits targetPort, so this is a JSON patch, not a value.
+  - path: patches/fix-dns-service-port.yaml
+    target:
+      kind: Service
+      name: nico-dns

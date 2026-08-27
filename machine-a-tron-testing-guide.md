@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Testing NICo with machine-a-tron (No Hardware Required)
 
 machine-a-tron is NICo's built-in simulation tool. It runs entirely in the
@@ -11,11 +16,15 @@ Reference).
 
 ## Quick Start
 
-Prerequisite: the site profile is deployed (`make deploy-site
-SITE_NAME=<name>`, from the root README). machine-a-tron's Kubernetes
-resources are already wired into the site chart's kustomize render, so
-they exist as soon as the site profile installs — they just need an image
-and some credentials before anything progresses.
+Prerequisite: the site profile is deployed **with the machine-a-tron test
+overlay** — `make deploy-site MAT=1`. The `MAT=1` flag layers
+`helm/values/nico-core-mat.yaml`, which supplies the emulator's site config
+(RBAC/host-discovery bypass flags, emulator networks, bmc-mock). Without it
+`make deploy-site` installs a production-safe profile with `siteConfig`
+disabled and machine-a-tron will not progress. machine-a-tron's Kubernetes
+resources are already wired into the site chart's kustomize render, so they
+exist as soon as the site profile installs — they just need an image and
+some credentials before anything progresses.
 
 ```bash
 make build-machine-a-tron       # ~10 min: compiles the Rust binary in-cluster
@@ -110,7 +119,7 @@ For mixed scenarios, add more `[machines.<name>]` sections (each DPU group
 will boot its DPUs but the host still can't reach `Ready`, per limitation
 #1 above).
 
-**`helm/values/nico-core.yaml`**
+**`helm/values/nico-core-mat.yaml`** (the `MAT=1` test overlay)
 (`nico-core.nico-api.siteConfig.nicoApiSiteConfig`) — every line here is a
 hard requirement, not tuning:
 
@@ -239,7 +248,7 @@ wait timers (not something to interrupt).
 
 Once both hosts show `Ready`, they're zero-DPU machines with a materialized
 `HostInband` interface (real IP from `[networks.hostinband]`, e.g.
-`192.168.253.1x`) — allocate them into a tenant via a **flat VPC**. `flat`
+`192.168.253.10`) — allocate them into a tenant via a **flat VPC**. `flat`
 virtualization is specifically for zero-DPU/NIC-mode hosts: tenant instances
 live directly on the underlay via `HostInband` segments, and NICo doesn't
 drive the data plane (routing/ACLs between flat VPCs are the network

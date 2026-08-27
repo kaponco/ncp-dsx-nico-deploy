@@ -8,7 +8,7 @@
 # public Rust image instead of UBI+RHSM (unlike the other images in this repo).
 
 # --- Builder stage ---
-FROM docker.io/library/rust:1.95-bookworm AS builder
+FROM docker.io/library/rust:1.96.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \

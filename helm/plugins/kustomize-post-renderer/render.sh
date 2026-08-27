@@ -40,10 +40,19 @@ for doc in docs:
         continue
     subnets = kea.get('Dhcp4', {}).get('subnet4', [])
     changed = False
-    for i, subnet in enumerate(subnets, start=1):
-        if 'id' not in subnet:
-            subnet['id'] = i
-            changed = True
+    # Allocate IDs from values not already taken by explicitly-numbered subnets,
+    # so a mix of explicit and missing IDs never produces duplicates.
+    used_ids = {subnet['id'] for subnet in subnets if 'id' in subnet}
+    next_id = 1
+    for subnet in subnets:
+        if 'id' in subnet:
+            continue
+        while next_id in used_ids:
+            next_id += 1
+        subnet['id'] = next_id
+        used_ids.add(next_id)
+        next_id += 1
+        changed = True
     if changed:
         data['kea_config.json'] = json.dumps(kea, indent=2)
 for doc in docs:

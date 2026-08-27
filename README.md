@@ -193,7 +193,9 @@ oc run nicocli --rm -it --restart=Never \
 
 To run as a standalone pod via `oc run`, build and push the `nicocli`
 image first (`docker/ubi/Dockerfile.nicocli`), then use the image with
-`--base-url https://nico-rest-api:8388`. Note: OpenShift requires
+`--base-url https://nico-rest-api.nico-rest.svc:8388` (the fully qualified
+Service name, since the pod may not run in the `nico-rest` namespace where
+the short name `nico-rest-api` resolves). Note: OpenShift requires
 security context overrides (`runAsNonRoot`, `drop: ALL`, etc.) for the
 restricted PodSecurity policy.
 
@@ -216,8 +218,11 @@ oc exec -n nico-system deploy/nico-api -- /opt/nico/nico-admin-cli \
 `machine-interfaces show` is a good sanity check that Core is up and
 reachable at any stage — it returns an empty table (rather than an error)
 until machines/DPUs have actually registered interfaces, so a working-but-
-empty response confirms the API and mTLS setup are fine even before any
-hardware (or machine-a-tron) has been discovered.
+empty response confirms the API is up and TLS-reachable even before any
+hardware (or machine-a-tron) has been discovered. Note it does *not* prove
+server-side mTLS enforcement: the machine-a-tron site config sets
+`bypass_rbac = true` and requests but does not require client certificates,
+so a success here says nothing about client-cert authentication.
 
 ## License
 

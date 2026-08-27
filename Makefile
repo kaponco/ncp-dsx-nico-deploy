@@ -26,6 +26,14 @@ DOCKERFILE_DIR := docker/ubi
 # Namespace the machine-a-tron BuildConfig/ImageStream/Deployment live in.
 MAT_NAMESPACE ?= nico-system
 
+# machine-a-tron TEST overlay. Layers the RBAC/host-discovery bypass flags and
+# emulator networks onto the site profile — TEST/DEV ONLY, never a real site.
+# Opt in with `make deploy-site MAT=1` (see machine-a-tron-testing-guide.md).
+# Off by default so `make deploy-site` cannot ship the bypass flags.
+MAT_VALUES := helm/values/nico-core-mat.yaml
+MAT ?=
+MAT_VALUES_FLAG := $(if $(MAT),-f $(MAT_VALUES),)
+
 # Cluster ingress domain (auto-detected from OpenShift)
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
@@ -47,7 +55,7 @@ SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
 check-prereqs:
 	@echo "=== Checking required tools ===" && \
 	MISSING=0; \
-	for bin in oc helm kustomize podman python3 git curl; do \
+	for bin in oc helm kustomize podman python3 git curl jq ssh-keygen; do \
 		if command -v $$bin >/dev/null 2>&1; then \
 			echo "  [OK]      $$bin ($$(command -v $$bin))"; \
 		else \
@@ -176,6 +184,7 @@ helm-lint: helm-dep-build
 	helm lint helm/infra-site/
 	helm template nico-rest $(NICO_REST_CHART) -n nico-rest -f helm/values/nico-rest.yaml > /dev/null
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system -f helm/values/nico-core.yaml > /dev/null
+	helm template nico-core $(NICO_CORE_CHART) -n nico-system -f helm/values/nico-core.yaml -f $(MAT_VALUES) > /dev/null
 
 helm-template: helm-dep-build
 	@echo "--- prereqs ---"
@@ -195,7 +204,7 @@ helm-template: helm-dep-build
 	helm template infra-site helm/infra-site/ -n nico-system
 	@echo "--- nico-core (upstream) ---"
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system \
-		-f helm/values/nico-core.yaml \
+		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 	@echo "--- nico-rest-site-agent (upstream) ---"
 	helm template site-agent $(NICO_SITE_AGENT_CHART) -n nico-system \
@@ -331,7 +340,7 @@ ensure-ssh-host-key:
 deploy-site: ensure-ssh-host-key
 	helm upgrade --install -n nico-system nico-core \
 		$(NICO_CORE_CHART) --wait --timeout 10m \
-		-f helm/values/nico-core.yaml \
+		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 
 # Site configuration
@@ -389,7 +398,7 @@ endif
 deploy-flow:
 	helm upgrade --install -n nico-system nico-flow \
 		$(NICO_FLOW_CHART) --wait --timeout 5m \
-		-f helm/values/nico-core.yaml
+		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG)
 
 deploy-all-site: deploy-site-infra vault-init deploy-site deploy-flow
 

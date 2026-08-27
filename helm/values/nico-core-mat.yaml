@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# machine-a-tron TEST OVERLAY for the upstream Core nico chart
+#
+# Layered on top of helm/values/nico-core.yaml (helm -f nico-core.yaml -f this)
+# ONLY for the emulated, no-hardware machine-a-tron flow. Deployed via
+# `make deploy-site MAT=1` (see machine-a-tron-testing-guide.md).
+#
+# WARNING — TEST/DEV ONLY. This overlay enables RBAC and host-discovery
+# bypasses (bypass_rbac, permissive_mode, allow_insecure_discovery) that MUST
+# NEVER be applied to a production site. The base nico-core.yaml keeps
+# siteConfig disabled precisely so these are opt-in and never shipped by
+# `make deploy-site` on its own.
+# =============================================================================
+
+nico-api:
+  siteConfig:
+    enabled: true
+    nicoApiSiteConfig: |
+      bypass_rbac = true
+      initial_domain_name = "nico.local"
+      # machine-a-tron doesn't run a real Scout agent, so it can't send
+      # measured-boot/TPM attestation reports; without this, hosts stall
+      # forever in Measuring/WaitingForMeasurements.
+      attestation_enabled = false
+      tpm_required = false
+      # machine-a-tron's simulated Scout agent calls discover_machine from
+      # the pod's real (non-simulated) source IP, which will never match
+      # any DHCP-assigned machine_interface address. Without this, host
+      # discovery permanently fails with "selected interface and discovery
+      # source IP do not belong to the same host" once a host declares a
+      # HostInband interface. Test/dev only — see machine_discovery.rs.
+      allow_insecure_discovery = true
+
+      [auth]
+      permissive_mode = true
+
+      [auth.trust]
+      spiffe_trust_domain = "nico.local"
+      spiffe_service_base_paths = ["/nico-system/sa/", "/default/sa/", "/elektra-site-agent/sa/"]
+      spiffe_machine_base_path = "/nico-system/machine/"
+
+      # Points BMC/Redfish exploration at machine-a-tron's bmc-mock instead
+      # of real hardware (see machine-a-tron-testing-guide.md).
+      [site_explorer]
+      run_interval = "10s"
+      allow_zero_dpu_hosts = true
+      bmc_proxy = "machine-a-tron-bmc-mock.nico-system.svc.cluster.local:1266"
+
+      # Network segments matching machine-a-tron's simulated DHCP relay
+      # addresses, so its discovery requests resolve to a segment instead
+      # of being rejected (see machine-a-tron-testing-guide.md).
+      [networks.oob]
+      type = "underlay"
+      prefix = "192.168.2.0/24"
+      gateway = "192.168.2.1"
+      mtu = 1500
+      reserve_first = 10
+
+      [networks.admin]
+      type = "admin"
+      prefix = "192.168.252.0/24"
+      gateway = "192.168.252.1"
+      mtu = 9000
+      reserve_first = 10
+
+      # v2.2.0-pr's machine-a-tron always declares a HostInband ExpectedInterface
+      # for the host-side NIC (crates/machine-a-tron/src/machine_a_tron.rs), so a
+      # host_inband segment is now required for the base NoDpu flow, not just
+      # tenant allocation. Must match machine-a-tron's host_inband_dhcp_relay_address
+      # (see kustomize/machine-a-tron.yaml).
+      [networks.hostinband]
+      type = "hostinband"
+      prefix = "192.168.253.0/24"
+      gateway = "192.168.253.1"
+      mtu = 9000
+      reserve_first = 10
+
+      [pools.lo-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.100.0.1", end = "10.100.0.254" }]
+
+      [pools.vpc-dpu-lo]
+      type = "ipv4"
+      ranges = [{ start = "10.101.0.1", end = "10.101.0.254" }]
+
+      [pools.secondary-vtep-ip]
+      type = "ipv4"
+      ranges = [{ start = "10.102.0.1", end = "10.102.0.254" }]
+
+      [pools.vni]
+      type = "integer"
+      ranges = [{ start = "100000", end = "199999" }]
+
+      [pools.vpc-vni]
+      type = "integer"
+      ranges = [{ start = "200000", end = "299999" }]
+
+      [pools.external-vpc-vni]
+      type = "integer"
+      ranges = [{ start = "300000", end = "399999" }]
+
+      [pools.vlan-id]
+      type = "integer"
+      ranges = [{ start = "100", end = "4094" }]
+
+      [pools.fnn-asn]
+      type = "integer"
+      ranges = [{ start = "4200000000", end = "4200000254" }]
+
+# DHCP option 6 / provisioning endpoints advertised to (simulated) clients.
+# These are the nico-dns / nico-pxe ClusterIPs on the test cluster this overlay
+# was captured against — they are NOT portable. Re-run `oc get svc nico-dns
+# nico-pxe -n nico-system` and update these before deploying on another cluster.
+nico-dhcp:
+  config:
+    kea:
+      hookParameters:
+        nameservers: "172.30.93.58"
+        ntpServer: "172.30.93.58"
+        provisioningServer: "172.30.214.195"

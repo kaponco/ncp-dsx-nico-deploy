@@ -50,99 +50,14 @@ nico-api:
       cpu: 1000m
       memory: 2Gi
   hostname: "nico.local"
+  # siteConfig is disabled in this base so `make deploy-site` never ships the
+  # RBAC/host-discovery bypass flags (bypass_rbac, permissive_mode,
+  # allow_insecure_discovery) required by the emulator. Supply a real
+  # site-config values file for a production site; for the no-hardware
+  # machine-a-tron flow layer helm/values/nico-core-mat.yaml
+  # (`make deploy-site MAT=1`, see machine-a-tron-testing-guide.md).
   siteConfig:
-    enabled: true
-    nicoApiSiteConfig: |
-      bypass_rbac = true
-      initial_domain_name = "nico.local"
-      # machine-a-tron doesn't run a real Scout agent, so it can't send
-      # measured-boot/TPM attestation reports; without this, hosts stall
-      # forever in Measuring/WaitingForMeasurements.
-      attestation_enabled = false
-      tpm_required = false
-      # machine-a-tron's simulated Scout agent calls discover_machine from
-      # the pod's real (non-simulated) source IP, which will never match
-      # any DHCP-assigned machine_interface address. Without this, host
-      # discovery permanently fails with "selected interface and discovery
-      # source IP do not belong to the same host" once a host declares a
-      # HostInband interface. Test/dev only — see machine_discovery.rs.
-      allow_insecure_discovery = true
-
-      [auth]
-      permissive_mode = true
-
-      [auth.trust]
-      spiffe_trust_domain = "nico.local"
-      spiffe_service_base_paths = ["/nico-system/sa/", "/default/sa/", "/elektra-site-agent/sa/"]
-      spiffe_machine_base_path = "/nico-system/machine/"
-
-      # Points BMC/Redfish exploration at machine-a-tron's bmc-mock instead
-      # of real hardware (see machine-a-tron-testing-guide.md).
-      [site_explorer]
-      run_interval = "10s"
-      allow_zero_dpu_hosts = true
-      bmc_proxy = "machine-a-tron-bmc-mock.nico-system.svc.cluster.local:1266"
-
-      # Network segments matching machine-a-tron's simulated DHCP relay
-      # addresses, so its discovery requests resolve to a segment instead
-      # of being rejected (see machine-a-tron-testing-guide.md).
-      [networks.oob]
-      type = "underlay"
-      prefix = "192.168.2.0/24"
-      gateway = "192.168.2.1"
-      mtu = 1500
-      reserve_first = 10
-
-      [networks.admin]
-      type = "admin"
-      prefix = "192.168.252.0/24"
-      gateway = "192.168.252.1"
-      mtu = 9000
-      reserve_first = 10
-
-      # v2.2.0-pr's machine-a-tron always declares a HostInband ExpectedInterface
-      # for the host-side NIC (crates/machine-a-tron/src/machine_a_tron.rs), so a
-      # host_inband segment is now required for the base NoDpu flow, not just
-      # tenant allocation. Must match machine-a-tron's host_inband_dhcp_relay_address
-      # (see kustomize/machine-a-tron.yaml).
-      [networks.hostinband]
-      type = "hostinband"
-      prefix = "192.168.253.0/24"
-      gateway = "192.168.253.1"
-      mtu = 9000
-      reserve_first = 10
-
-      [pools.lo-ip]
-      type = "ipv4"
-      ranges = [{ start = "10.100.0.1", end = "10.100.0.254" }]
-
-      [pools.vpc-dpu-lo]
-      type = "ipv4"
-      ranges = [{ start = "10.101.0.1", end = "10.101.0.254" }]
-
-      [pools.secondary-vtep-ip]
-      type = "ipv4"
-      ranges = [{ start = "10.102.0.1", end = "10.102.0.254" }]
-
-      [pools.vni]
-      type = "integer"
-      ranges = [{ start = "100000", end = "199999" }]
-
-      [pools.vpc-vni]
-      type = "integer"
-      ranges = [{ start = "200000", end = "299999" }]
-
-      [pools.external-vpc-vni]
-      type = "integer"
-      ranges = [{ start = "300000", end = "399999" }]
-
-      [pools.vlan-id]
-      type = "integer"
-      ranges = [{ start = "100", end = "4094" }]
-
-      [pools.fnn-asn]
-      type = "integer"
-      ranges = [{ start = "4200000000", end = "4200000254" }]
+    enabled: false
   envFrom:
     vaultApproleTokens:
       secretName: nico-vault-approle-tokens
@@ -185,15 +100,20 @@ nico-dhcp:
       # Chart default is a Debian path; our UBI image installs kea from
       # ISC's repo (RHEL layout) — see docker/ubi/Dockerfile.nico-core.
       hookLibraryPath: "/usr/lib64/kea/hooks/libdhcp.so"
-      # Chart ships these as literal "REPLACE_WITH_NICO_*_VIP" placeholders
-      # (intentional fail-loud default). Real values are nico-dns/nico-pxe's
-      # ClusterIPs (`oc get svc nico-dns nico-pxe -n nico-system`).
+      # These are per-cluster values, NOT portable defaults: DHCP advertises
+      # them (option 6 / provisioning) to clients, so they must be the actual
+      # ClusterIPs of nico-dns/nico-pxe on THIS cluster
+      # (`oc get svc nico-dns nico-pxe -n nico-system`). Left as the chart's
+      # fail-loud placeholders here so a fresh `make deploy-site` cannot
+      # silently advertise a stale IP copied from another cluster. Override
+      # per-cluster; the machine-a-tron overlay (nico-core-mat.yaml) carries
+      # example values for the emulated flow.
       hookParameters:
-        nameservers: "172.30.93.58"
-        # nico-ntp is disabled; reuses nico-dns's IP — just needs to parse
+        nameservers: "REPLACE_WITH_NICO_DNS_VIP"
+        # nico-ntp is disabled; reuse nico-dns's IP — just needs to parse
         # as valid IPv4, nothing here depends on a real NTP server.
-        ntpServer: "172.30.93.58"
-        provisioningServer: "172.30.214.195"
+        ntpServer: "REPLACE_WITH_NICO_DNS_VIP"
+        provisioningServer: "REPLACE_WITH_NICO_PXE_VIP"
       # subnet4[].id isn't emitted by this chart at all; auto-numbered
       # post-render instead (helm/plugins/kustomize-post-renderer/render.sh).
       # Kea 3.0.4 requires it; upstream's own Kea 2.2.0 auto-assigns it and

@@ -107,6 +107,7 @@ helm/
   values/                            Values overrides for upstream charts
     nico-rest.yaml                     REST API, workflow, site-manager, credsmgr
     nico-core.yaml                     Core tier (all services enabled)
+    nico-core-mat.yaml                 machine-a-tron TEST overlay (RBAC bypass, emulator net) — MAT=1 only
     nico-rest-site-agent.yaml          Site-agent (Temporal client)
   infra-cloud/                       Red Hat cloud infrastructure add-ons
     Chart.yaml                         Depends on: Temporal chart
@@ -232,7 +233,8 @@ After `make deploy-cloud`, these manual steps are required:
 
 The Keycloak route uses `reencrypt` TLS but the Helm template does not
 inject the `destinationCACertificate`. Without it, the OpenShift router
-cannot verify Keycloak's backend TLS and the route returns 503. Run:
+cannot verify Keycloak's backend TLS and the route returns 503. Requires
+`jq` (also checked by `make check-prereqs`). Run:
 
 ```bash
 CA=$(oc get secret nico-root-ca-secret -n cert-manager \
@@ -245,7 +247,27 @@ oc patch route keycloak -n rhbk-operator \
 ### Bootstrap the Organization
 
 The API requires an Infrastructure Provider and Tenant before resource
-endpoints work. These GET endpoints auto-create the entities:
+endpoints work. These GET endpoints auto-create the entities.
+
+First set `API_URL` and fetch a `TOKEN`. The token issuer must match the
+API's `externalBaseURL`, so acquire it from the external Keycloak route:
+
+```bash
+API_URL="https://nico-rest-api-nico-rest.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
+KC_URL="https://keycloak-rhbk-operator.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
+
+TOKEN=$(curl -s -X POST "$KC_URL/realms/nico/protocol/openid-connect/token" \
+  -d grant_type=client_credentials -d client_id=ncx-service \
+  -d client_secret="$(oc get secret keycloak-client-secret -n nico-rest \
+    -o jsonpath='{.data.keycloak-client-secret}' | base64 -d)" \
+  | jq -r .access_token)
+
+# Fail fast if either is empty before calling the API
+[ -n "$API_URL" ] && [ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "API_URL/TOKEN not set"; }
+```
+
+Then bootstrap the org (add `--cacert <ca-file>` instead of `-k` if you have
+the CA bundle on disk):
 
 ```bash
 curl -sk -H "Authorization: Bearer $TOKEN" \
