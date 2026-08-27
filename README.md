@@ -40,6 +40,35 @@ kustomize patches (Keycloak wait, CA trust, SCC fixes).
 make deploy-cloud
 ```
 
+### Post-Deploy (Cloud)
+
+Two manual steps are required after `make deploy-cloud`.
+
+**Patch the Keycloak route with the CA certificate.** The route uses
+`reencrypt` TLS but the Helm template does not inject the
+`destinationCACertificate`. Without it, the OpenShift router cannot verify
+Keycloak's backend TLS and the route returns 503.
+
+```bash
+CA=$(oc get secret nico-root-ca-secret -n cert-manager \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d)
+
+oc patch route keycloak -n rhbk-operator \
+  --type merge -p "$(jq -n --arg ca "$CA" '{"spec":{"tls":{"destinationCACertificate":$ca}}}')"
+```
+
+**Bootstrap the organization.** The API requires an Infrastructure Provider
+and Tenant before resource endpoints work. These GET endpoints auto-create
+the entities:
+
+```bash
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/test-org/nico/infrastructure-provider/current"
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/test-org/nico/tenant/current"
+```
+
 ### 4. Site Infrastructure
 
 Deploys PostgreSQL (nico, flow, psm, nsm databases), Vault (HA Raft for
