@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+.PHONY: check-prereqs
 .PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
-.PHONY: deploy-site-infra vault-init deploy-site deploy-site-agent deploy-flow
+.PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
 .PHONY: deploy-all-cloud deploy-all-site status undeploy
 
 # Upstream source repo (git submodule, read-only)
@@ -35,6 +36,45 @@ export PATH := $(POST_RENDERER_DIR):$(PATH)
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
 INFRA_CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/infra-cloud
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
+
+# =============================================================================
+# Prerequisites
+# =============================================================================
+
+# Verifies local tools this Makefile shells out to, including the pyyaml
+# module kustomize-post-renderer needs (missing it fails post-render with
+# an error Helm swallows).
+check-prereqs:
+	@echo "=== Checking required tools ===" && \
+	MISSING=0; \
+	for bin in oc helm kustomize podman python3 git curl; do \
+		if command -v $$bin >/dev/null 2>&1; then \
+			echo "  [OK]      $$bin ($$(command -v $$bin))"; \
+		else \
+			echo "  [MISSING] $$bin"; \
+			MISSING=1; \
+		fi; \
+	done; \
+	if python3 -c "import yaml" >/dev/null 2>&1; then \
+		echo "  [OK]      python3 module: yaml (pyyaml)"; \
+	else \
+		echo "  [MISSING] python3 module: yaml (pyyaml)"; \
+		echo "            install with: pip3 install --user --break-system-packages pyyaml"; \
+		MISSING=1; \
+	fi; \
+	if oc whoami >/dev/null 2>&1; then \
+		echo "  [OK]      oc is logged in to $$(oc whoami --show-server 2>/dev/null)"; \
+	else \
+		echo "  [MISSING] oc is not logged in to a cluster"; \
+		MISSING=1; \
+	fi; \
+	echo "" && \
+	if [ $$MISSING -eq 1 ]; then \
+		echo "One or more prerequisites are missing. See README.md Prerequisites section." && \
+		exit 1; \
+	else \
+		echo "All prerequisites satisfied."; \
+	fi
 
 # =============================================================================
 # Container Images
@@ -222,6 +262,14 @@ vault-init:
 		oc delete pod $$V -n $$NS && sleep 10 && \
 		until oc exec $$V -n $$NS -- vault status -tls-skip-verify -format=json 2>/dev/null | grep -q '"sealed".*false'; do sleep 5; done; \
 	fi && \
+	echo "Ensuring all Vault Raft replicas are unsealed..." && \
+	UK=$$(oc get secret vault-unseal-secret -n $$NS -o jsonpath='{.data.unseal-key}' | base64 -d) && \
+	for pod in $$(oc get pods -n $$NS -l app.kubernetes.io/name=vault -o jsonpath='{.items[*].metadata.name}'); do \
+		if oc exec $$pod -n $$NS -- vault status -tls-skip-verify -format=json 2>/dev/null | grep -q '"sealed".*true'; then \
+			echo "Unsealing $$pod (postStart only auto-unseals on pod (re)start, and only $$V is restarted above)..." && \
+			oc exec $$pod -n $$NS -- vault operator unseal -tls-skip-verify "$$UK" >/dev/null; \
+		fi; \
+	done && \
 	echo "=== Configuring Vault ===" && \
 	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
 		vault secrets enable -path=secrets kv-v2 2>/dev/null || true && \
@@ -242,6 +290,7 @@ vault-init:
 		echo 'path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] }' | vault policy write cert-manager-nico-policy - && \
 		vault write auth/kubernetes/role/cert-manager-nico-issuer bound_service_account_names=cert-manager-vault-nicoca-issuer bound_service_account_namespaces=cert-manager policies=cert-manager-nico-policy ttl=1h && \
 		echo 'path \"nicoca*\" { capabilities = [\"read\", \"list\"] } path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] } path \"nicoca/issue/nico-cluster\" { capabilities = [\"create\", \"update\"] } path \"secrets/data/*\" { capabilities = [\"read\", \"list\"] } path \"secrets/data/machines*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/machines/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/metadata/machines/*\" { capabilities = [\"delete\"] } path \"secrets/destroy/machines/*\" { capabilities = [\"delete\"] } path \"secrets/data/ufm/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/nmxm/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] } path \"secrets/data/bgp/*\" { capabilities = [\"create\", \"read\", \"patch\", \"list\", \"update\", \"delete\"] }' | vault policy write nico-vault-policy - && \
+		vault write auth/kubernetes/role/nico-api bound_service_account_names=nico-api bound_service_account_namespaces=nico-system policies=nico-vault-policy ttl=1h && \
 		vault auth enable approle 2>/dev/null || true && \
 		vault write auth/approle/role/nico token_policies=nico-vault-policy token_ttl=1h token_max_ttl=4h" && \
 	echo "Creating AppRole credentials..." && \
@@ -266,29 +315,24 @@ vault-init:
 	echo "{\"apiVersion\":\"cert-manager.io/v1\",\"kind\":\"ClusterIssuer\",\"metadata\":{\"name\":\"vault-nico-issuer\"},\"spec\":{\"vault\":{\"path\":\"nicoca/sign/nico-cluster\",\"server\":\"https://vault.nico-system.svc:8200\",\"caBundle\":\"$$CA_B64\",\"auth\":{\"kubernetes\":{\"role\":\"cert-manager-nico-issuer\",\"mountPath\":\"/v1/auth/kubernetes\",\"secretRef\":{\"name\":\"vault-nicoca-issuer-token\",\"key\":\"token\"}}}}}}" | oc apply -f - && \
 	echo "=== Vault fully configured ==="
 
-# nico-core image override. The site chart's top-level `global.image` (consumed
-# by the nico-rest-* sub-charts) and the vendored nico-core chart's own required
-# `global.image` collide under Helm's global-value inheritance — any value set
-# under `nico-core.global.image.*` in values.yaml is silently stomped by the
-# site chart's top-level global. The kustomize post-renderer's `images:` block
-# (helm/kustomize/nico-core/kustomization.yaml) is the actual mechanism that
-# fixes up the nico-core image after Helm renders it, so that's what we
-# parameterize here. Defaults match that file, so plain `make deploy-site`
-# is unchanged; override to point at a custom build, e.g.
-# `make deploy-site ... CORE_IMAGE_REGISTRY=quay.io/rh-ee-skapon/nico-core CORE_IMAGE_TAG=latest`.
-CORE_IMAGE_REGISTRY ?= quay.io/fdupont-redhat/nico-core
-CORE_IMAGE_TAG ?= v0.10.3
+# nico-ssh-console-rs expects a pre-existing `ssh-host-key` Secret that no
+# chart in this repo creates.
+ensure-ssh-host-key:
+	@oc get secret ssh-host-key -n nico-system >/dev/null 2>&1 || ( \
+		TMPDIR=$$(mktemp -d) && \
+		trap "rm -rf $$TMPDIR" EXIT && \
+		ssh-keygen -t ed25519 -N "" -f "$$TMPDIR/ssh_host_ed25519_key" -q && \
+		oc create namespace nico-system --dry-run=client -o yaml | oc apply -f - && \
+		oc create secret generic ssh-host-key -n nico-system \
+			--from-file=ssh_host_ed25519_key="$$TMPDIR/ssh_host_ed25519_key" \
+			--from-file=ssh_host_ed25519_key_pub="$$TMPDIR/ssh_host_ed25519_key.pub" \
+	)
 
-deploy-site:
-	SITE_KUSTOMIZE_TMP=$$(mktemp -d) && \
-	trap "rm -rf $$SITE_KUSTOMIZE_TMP" EXIT && \
-	cp -r $(SITE_KUSTOMIZE)/* "$$SITE_KUSTOMIZE_TMP/" && \
-	(cd "$$SITE_KUSTOMIZE_TMP" && kustomize edit set image \
-		quay.io/fdupont-redhat:latest=$(CORE_IMAGE_REGISTRY):$(CORE_IMAGE_TAG)) && \
+deploy-site: ensure-ssh-host-key
 	helm upgrade --install -n nico-system nico-core \
 		$(NICO_CORE_CHART) --wait --timeout 10m \
 		-f helm/values/nico-core.yaml \
-		--post-renderer $(POST_RENDERER) --post-renderer-args "$$SITE_KUSTOMIZE_TMP"
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 
 # Site configuration
 SITE_NAME ?=

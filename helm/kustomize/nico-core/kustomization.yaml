@@ -8,11 +8,6 @@ resources:
   # Bare-metal emulation for testing (see machine-a-tron-testing-guide.md)
   - machine-a-tron.yaml
 
-images:
-  - name: quay.io/fdupont-redhat:latest
-    newName: quay.io/fdupont-redhat/nico-core
-    newTag: v0.10.3
-
 patches:
   # Remove nico-flow Namespace resource (conflicts with Helm ownership)
   - path: patches/remove-flow-namespace.yaml
@@ -65,3 +60,31 @@ patches:
     target:
       kind: Deployment
       name: nico-dsx-exchange-consumer
+
+  # Remove SYS_PTRACE/IPC_LOCK from remaining Core services for OpenShift SCC
+  - path: patches/fix-dhcp-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-dhcp
+  - path: patches/fix-hardware-health-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-hardware-health
+  - path: patches/fix-pxe-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-pxe
+  - path: patches/fix-ssh-console-security-context.yaml
+    target:
+      kind: Deployment
+      name: nico-ssh-console-rs
+  - path: patches/fix-dns-security-context.yaml
+    target:
+      kind: StatefulSet
+      name: nico-dns
+
+  # Fix wrong CLI flag guessed by the chart's binary-detection script
+  - path: patches/fix-dns-flag-name.yaml
+    target:
+      kind: StatefulSet
+      name: nico-dns
