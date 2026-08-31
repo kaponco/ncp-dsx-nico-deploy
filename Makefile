@@ -34,6 +34,27 @@ MAT_VALUES := helm/values/nico-core-mat.yaml
 MAT ?=
 MAT_VALUES_FLAG := $(if $(MAT),-f $(MAT_VALUES),)
 
+# Site-config values layered onto nico-core.yaml. The base disables siteConfig
+# (no pools) so `make deploy-site` never silently ships RBAC bypasses; Core
+# exits without resource pools, so a real deploy MUST supply them. Default is
+# the production overlay (pools/networks, no bypass); MAT=1 swaps to the
+# machine-a-tron overlay, which carries its own pools + emulator bypass flags.
+# Override with SITE_VALUES=<file> for a site-specific config.
+SITE_VALUES ?= helm/values/nico-core-site.yaml
+SITE_CONFIG_FLAG := $(if $(MAT),-f $(MAT_VALUES),-f $(SITE_VALUES))
+
+# Vault topology auto-selection. HA (3-node Raft) needs >=3 schedulable nodes;
+# a single-node (SNO/VM) or 2-node cluster falls back to standalone Vault (file
+# storage) so the default `make deploy-all-site` works everywhere without a
+# separate -crc variant. Detection runs `oc get nodes`; if oc is unreachable
+# (count 0) it defaults to standalone, which deploys anywhere. Force explicitly
+# with VAULT_MODE=ha or VAULT_MODE=standalone.
+NODE_COUNT := $(shell oc get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+VAULT_MODE ?= $(if $(filter-out 0 1 2,$(NODE_COUNT)),ha,standalone)
+# CRC_VAULT_OVERRIDES is defined further down; use recursive '=' so it resolves
+# at recipe time regardless of definition order.
+VAULT_OVERRIDES = $(if $(filter standalone,$(VAULT_MODE)),$(CRC_VAULT_OVERRIDES),)
+
 # Cluster ingress domain (auto-detected from OpenShift)
 CLUSTER_DOMAIN ?= $(shell oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null)
 
@@ -204,7 +225,7 @@ helm-template: helm-dep-build
 	helm template infra-site helm/infra-site/ -n nico-system
 	@echo "--- nico-core (upstream) ---"
 	helm template nico-core $(NICO_CORE_CHART) -n nico-system \
-		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG) \
+		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 	@echo "--- nico-rest-site-agent (upstream) ---"
 	helm template site-agent $(NICO_SITE_AGENT_CHART) -n nico-system \
@@ -239,9 +260,11 @@ deploy-all-cloud: deploy-prereqs deploy-cloud-infra deploy-cloud
 # =============================================================================
 
 deploy-site-infra: helm-dep-build
+	@echo "=== Vault topology: $(VAULT_MODE) (detected $(NODE_COUNT) node(s)) ==="
 	helm upgrade --install -n nico-system nico-site-infra \
 		helm/infra-site/ \
-		--create-namespace --timeout 15m
+		--create-namespace --timeout 15m \
+		$(VAULT_OVERRIDES)
 
 vault-init:
 	@echo "=== Initializing Vault (one-time) ===" && \
@@ -340,7 +363,7 @@ ensure-ssh-host-key:
 deploy-site: ensure-ssh-host-key
 	helm upgrade --install -n nico-system nico-core \
 		$(NICO_CORE_CHART) --wait --timeout 10m \
-		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG) \
+		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 
 # Site configuration

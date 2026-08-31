@@ -5,8 +5,10 @@ kind: Kustomization
 
 resources:
   - all.yaml
-  # Bare-metal emulation for testing (see machine-a-tron-testing-guide.md)
-  - machine-a-tron.yaml
+  # Bare-metal emulation for testing (see machine-a-tron-testing-guide.md).
+  # Disabled for this real (non-MAT) deploy — image isn't built and it wastes
+  # a scheduling slot on the single node. Re-enable for machine-a-tron testing.
+  # - machine-a-tron.yaml
 
 patches:
   # Remove nico-flow Namespace resource (conflicts with Helm ownership)

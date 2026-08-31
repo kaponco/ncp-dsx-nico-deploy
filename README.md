@@ -10,6 +10,12 @@ External Secrets Operator, and OpenShift Routes.
 - OpenShift 4.21+
 - `oc` and `helm` CLI tools
 - Git submodule initialized (`git submodule update --init`)
+- A **default StorageClass** with dynamic RWO provisioning. The PostgreSQL,
+  Vault, NATS, and Temporal PVCs use `storageClass: null` (the cluster
+  default), so one must exist. Managed clouds ship this (e.g. ROSA →
+  `gp3-csi`); a bare cluster (SNO on a VM, self-managed bare metal) needs a
+  provisioner installed and marked default first — LVM Storage (LVMS) or
+  OpenShift Data Foundation. See `minimal-setup-requirements.md`.
 
 ## Deployment
 
@@ -27,8 +33,10 @@ make deploy-prereqs
 Deploys PostgreSQL (nico, temporal, keycloak databases), RHBK Keycloak
 with realm import, Temporal server, OpenShift Routes, and ESO secrets.
 
+The cloud profile is single-instance (no HA) and runs as-is on a single node.
+
 ```bash
-make deploy-cloud-infra        # or deploy-cloud-infra-crc for single-node
+make deploy-cloud-infra
 ```
 
 ### 3. NICo REST API
@@ -71,13 +79,18 @@ curl -sk -H "Authorization: Bearer $TOKEN" \
 
 ### 4. Site Infrastructure
 
-Deploys PostgreSQL (nico, flow, psm, nsm databases), Vault (HA Raft for
-production, standalone for CRC), NATS, and ESO secrets.
+Deploys PostgreSQL (nico, flow, psm, nsm databases), Vault, NATS, and ESO
+secrets.
 
 ```bash
-make deploy-site-infra         # HA Raft (3 nodes, production)
-make deploy-site-infra-crc     # standalone (single-node, CRC)
+make deploy-site-infra
 ```
+
+Vault topology is auto-selected from the cluster's node count: **3-node HA
+Raft** on clusters with ≥3 schedulable nodes, **standalone** (file storage) on
+single-node (SNO/VM) or 2-node clusters — so the same command works everywhere.
+Force it with `make deploy-site-infra VAULT_MODE=ha|standalone`.
+`make deploy-site-infra-crc` remains as an explicit standalone alias.
 
 ### 5. Initialize Vault
 
@@ -101,6 +114,24 @@ patches (Crunchy secret keys, SCC fixes, migration fixes).
 ```bash
 make deploy-site
 ```
+
+`deploy-site` layers a site-config overlay onto `nico-core.yaml`. The base
+disables `siteConfig` (no resource pools) so it never silently ships RBAC
+bypasses — but Core exits without pools, so a config is always supplied:
+
+- **default** → `helm/values/nico-core-site.yaml` (production pools/networks,
+  no bypass). Override with `make deploy-site SITE_VALUES=<your-site>.yaml`.
+- **`make deploy-site MAT=1`** → `helm/values/nico-core-mat.yaml`
+  (machine-a-tron emulator: pools **plus** bypass flags — test/dev only).
+
+> **Per-cluster values.** Two settings in these files are cluster-specific and
+> must be set for the target cluster before onboarding real hardware:
+> the DHCP hook IPs in `nico-core.yaml` (`nameservers` / `provisioningServer`
+> must be *this* cluster's `nico-dns` / `nico-pxe` ClusterIPs —
+> `oc get svc nico-dns nico-pxe -n nico-system`), and the network/pool ranges
+> in the site-config overlay. The shipped values are valid placeholders so the
+> stack comes up on any cluster with no hardware attached, but PXE/discovery
+> will use stale addresses until you set the real ones.
 
 ### 7. Register a Site and Deploy Site-Agent
 

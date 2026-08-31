@@ -115,6 +115,27 @@ be slower and occasional PG memory pressure is possible.
 
 120 GiB minimum (50 GiB OCP platform + 12 GiB PG PVCs + image layers + etcd).
 
+**Storage provisioner (required).** The PostgreSQL, Vault, NATS, and Temporal
+PVCs request the cluster's **default StorageClass** (charts set
+`storageClass: null`), so the cluster must have one backed by a dynamic RWO
+provisioner. Managed clouds provide this out of the box (e.g. ROSA →
+`gp3-csi`). A bare cluster — SNO on a VM, or self-managed bare metal — has no
+default StorageClass until you install one:
+
+- **LVM Storage (LVMS)** — lightweight, single-node friendly. Install the
+  operator, create an `LVMCluster` over a spare block device, and mark its
+  StorageClass default:
+  ```bash
+  oc patch storageclass <name> \
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  ```
+  If the LVMS operator reconciles that annotation away, set `default: true` on
+  the deviceClass in the `LVMCluster` CR instead.
+- **OpenShift Data Foundation (ODF)** — heavier, multi-node/HA storage.
+
+Without a default StorageClass every PVC stays `Pending` and
+`make deploy-cloud-infra` / `deploy-site-infra` never complete.
+
 ---
 
 ## Node Topology Options

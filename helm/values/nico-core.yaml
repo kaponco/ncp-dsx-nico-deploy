@@ -82,6 +82,7 @@ nico-api:
 
 nico-bmc-proxy:
   enabled: true
+  replicas: 1
   envFrom:
     vaultApproleTokens:
       secretName: nico-vault-approle-tokens
@@ -109,11 +110,11 @@ nico-dhcp:
       # per-cluster; the machine-a-tron overlay (nico-core-mat.yaml) carries
       # example values for the emulated flow.
       hookParameters:
-        nameservers: "REPLACE_WITH_NICO_DNS_VIP"
+        nameservers: "172.30.57.9"
         # nico-ntp is disabled; reuse nico-dns's IP — just needs to parse
         # as valid IPv4, nothing here depends on a real NTP server.
-        ntpServer: "REPLACE_WITH_NICO_DNS_VIP"
-        provisioningServer: "REPLACE_WITH_NICO_PXE_VIP"
+        ntpServer: "172.30.57.9"
+        provisioningServer: "172.30.103.117"
       # subnet4[].id isn't emitted by this chart at all; auto-numbered
       # post-render instead (helm/plugins/kustomize-post-renderer/render.sh).
       # Kea 3.0.4 requires it; upstream's own Kea 2.2.0 auto-assigns it and
@@ -125,7 +126,7 @@ nico-dhcp:
             - "0.0.0.0-255.255.255.255"
 nico-dns:
   enabled: true
-  replicas: 2
+  replicas: 1
   # Port 53 needs CAP_NET_BIND_SERVICE, but this cluster's runtime doesn't
   # propagate it to the ambient set for non-root exec (CapBnd has it,
   # CapEff doesn't — confirmed via /proc/1/status), so bind() still fails
