@@ -249,32 +249,45 @@ oc patch route keycloak -n rhbk-operator \
 The API requires an Infrastructure Provider and Tenant before resource
 endpoints work. These GET endpoints auto-create the entities.
 
-First set `API_URL` and fetch a `TOKEN`. The token issuer must match the
-API's `externalBaseURL`, so acquire it from the external Keycloak route:
+The `ncx-service` client secret may contain characters (`+`, `/`) that
+`curl -d` corrupts; use `--data-urlencode`. The K8s `keycloak-client-secret`
+may be stale — fetch the authoritative value from the Keycloak admin API.
+The org name in the URL is derived from the Keycloak realm role prefix
+(`ncx:NICO_PROVIDER_ADMIN` → org `ncx`):
 
 ```bash
 API_URL="https://nico-rest-api-nico-rest.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
 KC_URL="https://keycloak-rhbk-operator.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
 
-TOKEN=$(curl -s -X POST "$KC_URL/realms/nico/protocol/openid-connect/token" \
-  -d grant_type=client_credentials -d client_id=ncx-service \
-  -d client_secret="$(oc get secret keycloak-client-secret -n nico-rest \
-    -o jsonpath='{.data.keycloak-client-secret}' | base64 -d)" \
+_ADMIN_USER=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+  -o jsonpath='{.data.username}' | base64 -d)
+_ADMIN_PASS=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+  -o jsonpath='{.data.password}' | base64 -d)
+_ADMIN_TOKEN=$(curl -sk -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=admin-cli \
+  -d "username=$_ADMIN_USER" -d "password=$_ADMIN_PASS" | jq -r .access_token)
+_CLIENT_UUID=$(curl -sk -H "Authorization: Bearer $_ADMIN_TOKEN" \
+  "$KC_URL/admin/realms/nico/clients?clientId=ncx-service" | jq -r '.[0].id')
+_CLIENT_SECRET=$(curl -sk -H "Authorization: Bearer $_ADMIN_TOKEN" \
+  "$KC_URL/admin/realms/nico/clients/$_CLIENT_UUID" | jq -r .secret)
+
+TOKEN=$(curl -sk -X POST "$KC_URL/realms/nico/protocol/openid-connect/token" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=ncx-service" \
+  --data-urlencode "client_secret=$_CLIENT_SECRET" \
   | jq -r .access_token)
 
-# Fail fast if either is empty before calling the API
-[ -n "$API_URL" ] && [ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "API_URL/TOKEN not set"; }
+[ -n "$API_URL" ] && [ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "API_URL/TOKEN not set"; exit 1; }
 ```
 
-Then bootstrap the org (add `--cacert <ca-file>` instead of `-k` if you have
-the CA bundle on disk):
+Then bootstrap the org:
 
 ```bash
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/v2/org/test-org/nico/infrastructure-provider/current"
+  "$API_URL/v2/org/ncx/nico/infrastructure-provider/current"
 
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/v2/org/test-org/nico/tenant/current"
+  "$API_URL/v2/org/ncx/nico/tenant/current"
 ```
 
 ## Conventions

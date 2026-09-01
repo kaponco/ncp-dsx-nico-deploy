@@ -6,7 +6,7 @@
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
 .PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
-.PHONY: deploy-all-cloud deploy-all-site status undeploy
+.PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 
 # Upstream source repo (git submodule, read-only)
 UPSTREAM ?= helm/vendor/infra-controller
@@ -65,6 +65,14 @@ export PATH := $(POST_RENDERER_DIR):$(PATH)
 CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-rest
 INFRA_CLOUD_KUSTOMIZE := $(CURDIR)/helm/kustomize/infra-cloud
 SITE_KUSTOMIZE := $(CURDIR)/helm/kustomize/nico-core
+
+# =============================================================================
+# Secrets Management
+# =============================================================================
+
+# Generate Keycloak client secret once per make session
+# Same secret used across all targets in a single make invocation
+KEYCLOAK_CLIENT_SECRET := $(shell openssl rand -base64 32)
 
 # =============================================================================
 # Prerequisites
@@ -244,6 +252,7 @@ deploy-cloud-infra: helm-dep-build
 	helm upgrade --install -n nico-rest nico-rest-infra \
 		helm/infra-cloud/ \
 		--create-namespace --wait --timeout 10m \
+		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
 
 deploy-cloud:
@@ -251,9 +260,70 @@ deploy-cloud:
 		$(NICO_REST_CHART) --wait --timeout 10m \
 		-f helm/values/nico-rest.yaml \
 		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
+		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(CLOUD_KUSTOMIZE)
 
-deploy-all-cloud: deploy-prereqs deploy-cloud-infra deploy-cloud
+# All-in-one cloud deployment - runs prereqs, infra, and app in sequence
+# Inlined to ensure same secret is used for both helm commands
+deploy-all-cloud: deploy-prereqs helm-dep-build
+	@echo "=========================================="
+	@echo "Deploying Cloud Infrastructure"
+	@echo "=========================================="
+	helm upgrade --install -n nico-rest nico-rest-infra \
+		helm/infra-cloud/ \
+		--create-namespace --wait --timeout 10m \
+		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(INFRA_CLOUD_KUSTOMIZE)
+	@echo ""
+	@echo "=========================================="
+	@echo "Deploying Cloud Application"
+	@echo "=========================================="
+	helm upgrade --install -n nico-rest nico-rest \
+		$(NICO_REST_CHART) --wait --timeout 10m \
+		-f helm/values/nico-rest.yaml \
+		--set nico-rest-api.config.keycloak.externalBaseURL=https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN) \
+		--set nico-rest-common.secrets.keycloakClientSecret.value="$(KEYCLOAK_CLIENT_SECRET)" \
+		--post-renderer $(POST_RENDERER) --post-renderer-args $(CLOUD_KUSTOMIZE)
+	@echo ""
+	$(MAKE) patch-keycloak-route
+	$(MAKE) bootstrap-org
+	@echo "✅ Cloud deployment complete!"
+
+patch-keycloak-route:
+	@echo "=== Patching Keycloak route with CA certificate ==="
+	@CA=$$(oc get secret nico-root-ca-secret -n cert-manager \
+		-o jsonpath='{.data.tls\.crt}' | base64 -d) && \
+	oc patch route keycloak -n rhbk-operator \
+		--type merge -p "$$(jq -n --arg ca "$$CA" '{"spec":{"tls":{"destinationCACertificate":$$ca}}}')"
+	@echo "=== Keycloak route patched ==="
+
+bootstrap-org:
+	@echo "=== Bootstrapping NICo organization ==="
+	@API_URL="https://nico-rest-api-nico-rest.$(CLUSTER_DOMAIN)" && \
+	KC_URL="https://keycloak-rhbk-operator.$(CLUSTER_DOMAIN)" && \
+	_ADMIN_USER=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+		-o jsonpath='{.data.username}' | base64 -d) && \
+	_ADMIN_PASS=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+		-o jsonpath='{.data.password}' | base64 -d) && \
+	_ADMIN_TOKEN=$$(curl -sk -X POST "$$KC_URL/realms/master/protocol/openid-connect/token" \
+		-d grant_type=password -d client_id=admin-cli \
+		-d "username=$$_ADMIN_USER" -d "password=$$_ADMIN_PASS" | jq -r .access_token) && \
+	_CLIENT_UUID=$$(curl -sk -H "Authorization: Bearer $$_ADMIN_TOKEN" \
+		"$$KC_URL/admin/realms/nico/clients?clientId=ncx-service" | jq -r '.[0].id') && \
+	_CLIENT_SECRET=$$(curl -sk -H "Authorization: Bearer $$_ADMIN_TOKEN" \
+		"$$KC_URL/admin/realms/nico/clients/$$_CLIENT_UUID" | jq -r .secret) && \
+	TOKEN=$$(curl -sk -X POST "$$KC_URL/realms/nico/protocol/openid-connect/token" \
+		--data-urlencode "grant_type=client_credentials" \
+		--data-urlencode "client_id=ncx-service" \
+		--data-urlencode "client_secret=$$_CLIENT_SECRET" \
+		| jq -r .access_token) && \
+	{ [ -n "$$API_URL" ] && [ -n "$$TOKEN" ] && [ "$$TOKEN" != null ] || \
+		{ echo "ERROR: API_URL or TOKEN not set"; exit 1; }; } && \
+	curl -sk -H "Authorization: Bearer $$TOKEN" \
+		"$$API_URL/v2/org/ncx/nico/infrastructure-provider/current" | jq . && \
+	curl -sk -H "Authorization: Bearer $$TOKEN" \
+		"$$API_URL/v2/org/ncx/nico/tenant/current" | jq .
+	@echo "=== Organization bootstrapped ==="
 
 # =============================================================================
 # Deploy — Site Profile
@@ -381,11 +451,23 @@ endif
 	@SITE_ID_VAL="$(SITE_ID)"; \
 	if [ -z "$$SITE_ID_VAL" ]; then \
 		echo "=== Acquiring service-account token ===" && \
+		_ADMIN_USER=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+			-o jsonpath='{.data.username}' | base64 -d) && \
+		_ADMIN_PASS=$$(oc get secret keycloak-admin-secret -n rhbk-operator \
+			-o jsonpath='{.data.password}' | base64 -d) && \
+		_ADMIN_TOKEN=$$(curl -sk -X POST "$(KC_URL)/realms/master/protocol/openid-connect/token" \
+			-d grant_type=password -d client_id=admin-cli \
+			-d "username=$$_ADMIN_USER" -d "password=$$_ADMIN_PASS" | jq -r .access_token) && \
+		_CLIENT_UUID=$$(curl -sk -H "Authorization: Bearer $$_ADMIN_TOKEN" \
+			"$(KC_URL)/admin/realms/nico/clients?clientId=ncx-service" | jq -r '.[0].id') && \
+		_CLIENT_SECRET=$$(curl -sk -H "Authorization: Bearer $$_ADMIN_TOKEN" \
+			"$(KC_URL)/admin/realms/nico/clients/$$_CLIENT_UUID" | jq -r .secret) && \
 		TOKEN=$$(curl -sk -X POST "$(KC_URL)/realms/nico/protocol/openid-connect/token" \
-			-d "grant_type=client_credentials" \
-			-d "client_id=ncx-service" \
-			-d "client_secret=$$(oc get secret keycloak-client-secret -n nico-rest -o jsonpath='{.data.keycloak-client-secret}' | base64 -d)" \
-			| python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])") && \
+			--data-urlencode "grant_type=client_credentials" \
+			--data-urlencode "client_id=ncx-service" \
+			--data-urlencode "client_secret=$$_CLIENT_SECRET" \
+			| jq -r .access_token) && \
+		{ [ -n "$$TOKEN" ] && [ "$$TOKEN" != null ] || { echo "ERROR: failed to acquire token"; exit 1; }; } && \
 		echo "=== Bootstrapping org ===" && \
 		curl -sk -H "Authorization: Bearer $$TOKEN" \
 			"$(API_URL)/v2/org/ncx/nico/service-account/current" > /dev/null && \

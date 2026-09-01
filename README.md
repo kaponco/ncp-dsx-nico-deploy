@@ -50,32 +50,23 @@ make deploy-cloud
 
 ### Post-Deploy (Cloud)
 
-Two manual steps are required after `make deploy-cloud`.
-
-**Patch the Keycloak route with the CA certificate.** The route uses
-`reencrypt` TLS but the Helm template does not inject the
-`destinationCACertificate`. Without it, the OpenShift router cannot verify
-Keycloak's backend TLS and the route returns 503.
+These steps run automatically as part of `make deploy-all-cloud`. If you
+ran steps 1–3 individually, run them manually:
 
 ```bash
-CA=$(oc get secret nico-root-ca-secret -n cert-manager \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d)
-
-oc patch route keycloak -n rhbk-operator \
-  --type merge -p "$(jq -n --arg ca "$CA" '{"spec":{"tls":{"destinationCACertificate":$ca}}}')"
+make patch-keycloak-route   # fixes Keycloak route 503 (reencrypt TLS)
+make bootstrap-org          # creates Infrastructure Provider and Tenant
 ```
 
-**Bootstrap the organization.** The API requires an Infrastructure Provider
-and Tenant before resource endpoints work. These GET endpoints auto-create
-the entities:
+**`patch-keycloak-route`** injects the self-signed CA certificate into the
+Keycloak route's `destinationCACertificate`. Without it, the OpenShift router
+cannot verify Keycloak's backend TLS and the route returns 503.
 
-```bash
-curl -sk -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/v2/org/test-org/nico/infrastructure-provider/current"
-
-curl -sk -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/v2/org/test-org/nico/tenant/current"
-```
+**`bootstrap-org`** fetches the authoritative `ncx-service` client secret
+from the Keycloak admin API (not the K8s secret, which may be stale), obtains
+a token, then calls the infrastructure-provider and tenant bootstrap endpoints.
+The org name (`ncx`) is derived from the Keycloak realm role prefix
+(`ncx:NICO_PROVIDER_ADMIN`).
 
 ### 4. Site Infrastructure
 
@@ -148,7 +139,7 @@ make deploy-site-agent SITE_ID=<existing-uuid>
 ### Full Deploy (all steps)
 
 ```bash
-make deploy-all-cloud          # steps 1-3
+make deploy-all-cloud          # steps 1-3 + patch-keycloak-route + bootstrap-org
 make deploy-all-site           # steps 4-7 (without site-agent)
 ```
 
