@@ -13,4 +13,4 @@ helm/nico-temporal/Chart.lock
 helm/infra-cloud/charts/
 helm/infra-site/charts/
 *kubeconfig*
-
+.idea
