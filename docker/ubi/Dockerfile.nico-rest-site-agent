@@ -7,15 +7,15 @@ USER root
 ENV CGO_ENABLED=0
 WORKDIR /workspace
 
-COPY go.mod go.sum VERSION ./
+COPY go.mod go.sum ./
 COPY sdk/standard/go.mod ./sdk/standard/
 RUN --mount=type=cache,target=/root/go/pkg/mod   \
     go mod download
 
+COPY proto/ ./proto/
 COPY site-agent/ ./site-agent/
 COPY common/ ./common/
 COPY site-manager/ ./site-manager/
-COPY workflow-schema/ ./workflow-schema/
 COPY site-workflow/ ./site-workflow/
 COPY cert-manager/ ./cert-manager/
 

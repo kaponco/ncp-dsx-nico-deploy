@@ -505,7 +505,6 @@ endif
 		-f helm/values/nico-rest-site-agent.yaml \
 		--set envConfig.CLUSTER_ID=$$SITE_ID_VAL \
 		--set envConfig.TEMPORAL_SUBSCRIBE_NAMESPACE=$$SITE_ID_VAL \
-		--set envConfig.TEMPORAL_SUBSCRIBE_QUEUE=$$SITE_ID_VAL \
 		--set bootstrap.enabled=true
 
 deploy-flow:
