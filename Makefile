@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 .PHONY: check-prereqs
-.PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core helm-dep-build helm-lint helm-template
+.PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
 .PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
@@ -124,6 +124,14 @@ docker-build-ubi:
 		podman build -t $(IMAGE_REGISTRY)/$$img:$(IMAGE_TAG) \
 			-f $(DOCKERFILE_DIR)/Dockerfile.$$img $(UPSTREAM)/rest-api; \
 	done
+
+docker-build-nicocli:
+	podman build --platform linux/amd64 \
+		-t $(IMAGE_REGISTRY)/nicocli:$(IMAGE_TAG) \
+		-f $(DOCKERFILE_DIR)/Dockerfile.nicocli $(UPSTREAM)/rest-api
+
+docker-push-nicocli:
+	podman push $(IMAGE_REGISTRY)/nicocli:$(IMAGE_TAG)
 
 # nico-core/nico-admin-cli build on UBI and need a live RHEL subscription to
 # `dnf install rust-toolset` mid-build (see Dockerfile.nico-core) — unlike the

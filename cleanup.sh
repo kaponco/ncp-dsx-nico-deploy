@@ -4,7 +4,11 @@
 
 set -e
 
-export KUBECONFIG=$(pwd)/nico3_kubeconfig_new
+if ! oc whoami --show-server >/dev/null 2>&1; then
+    echo "ERROR: no cluster configured (run oc login first)"
+    exit 1
+fi
+echo "Cluster: $(oc whoami --show-server)"
 
 echo "=========================================="
 echo "NICo Complete Cleanup Script"

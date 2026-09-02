@@ -155,6 +155,35 @@ make status
 make undeploy
 ```
 
+## Utility Scripts
+
+### cleanup.sh — Full teardown
+
+Removes all Helm releases, PostgreSQL clusters, PVCs, Keycloak, Vault, namespaces,
+ClusterIssuers, and cert-manager resources. Keeps OLM subscriptions so operators
+are not re-downloaded on the next deployment. Prompts for confirmation before
+proceeding.
+
+```bash
+bash cleanup.sh
+```
+
+Use this instead of `make undeploy` when resources are stuck in `Terminating`
+(the script removes finalizers and force-deletes namespaces).
+
+### validate-machines.sh — Validate sites and machine count
+
+Connects to the currently logged-in cluster, acquires a `ncx-service` token
+from Keycloak via the admin API, then calls the NICo REST API directly with
+`curl` to list sites and machines per site. No extra image build required.
+
+```bash
+bash validate-machines.sh
+```
+
+The script uses the active `oc` session and will fail fast with a clear error
+if no cluster is configured.
+
 ## Architecture
 
 Upstream charts are installed directly — never wrapped. Our downstream
