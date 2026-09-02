@@ -252,7 +252,7 @@ helm-template: helm-dep-build
 # =============================================================================
 
 deploy-prereqs:
-	helm upgrade --install nvidia-infra-controller-prereqs \
+	helm upgrade --install -n default nvidia-infra-controller-prereqs \
 		helm/nvidia-infra-controller-prereqs/ \
 		--wait --timeout 15m
 
@@ -571,4 +571,4 @@ undeploy:
 	helm uninstall -n nico-rest nico-rest-infra 2>/dev/null || true
 	oc delete namespace nico-rest 2>/dev/null || true
 	oc delete namespace rhbk-operator 2>/dev/null || true
-	helm uninstall nvidia-infra-controller-prereqs 2>/dev/null || true
+	helm uninstall -n default nvidia-infra-controller-prereqs 2>/dev/null || true
