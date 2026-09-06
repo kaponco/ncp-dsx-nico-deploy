@@ -253,7 +253,7 @@ helm-template: helm-dep-build
 # =============================================================================
 
 deploy-prereqs:
-	helm upgrade --install nvidia-infra-controller-prereqs \
+	helm upgrade --install -n default nvidia-infra-controller-prereqs \
 		helm/nvidia-infra-controller-prereqs/ \
 		--wait --timeout 15m
 
