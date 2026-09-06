@@ -7,6 +7,7 @@
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
 .PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
+.PHONY: reset-dpu-endpoint
 
 # Upstream source repo (git submodule, read-only)
 UPSTREAM ?= helm/vendor/infra-controller
@@ -383,8 +384,11 @@ vault-init:
 	echo "=== Configuring Vault ===" && \
 	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
 		vault secrets enable -path=secrets kv-v2 2>/dev/null || true && \
-		vault kv put secrets/machines/all_dpus/factory_default/bmc-metadata-items/root UsernamePassword='{\"username\":\"root\",\"password\":\"0penBmc\"}' && \
-		vault kv put secrets/machines/all_dpus/factory_default/uefi-metadata-items/auth UsernamePassword='{\"username\":\"\",\"password\":\"bluefield\"}' && \
+		printf '{\"UsernamePassword\":{\"username\":\"root\",\"password\":\"0penBmc\"}}' | vault kv put secrets/machines/all_dpus/factory_default/bmc-metadata-items/root - && \
+		printf '{\"UsernamePassword\":{\"username\":\"\",\"password\":\"bluefield\"}}' | vault kv put secrets/machines/all_dpus/factory_default/uefi-metadata-items/auth - && \
+		printf '{\"UsernamePassword\":{\"username\":\"root\",\"password\":\"0penBmc\"}}' | vault kv put secrets/machines/bmc/site/root - && \
+		printf '{\"UsernamePassword\":{\"username\":\"\",\"password\":\"bluefield\"}}' | vault kv put secrets/machines/all_dpus/site_default/uefi-metadata-items/auth - && \
+		printf '{\"UsernamePassword\":{\"username\":\"\",\"password\":\"bluefield\"}}' | vault kv put secrets/machines/all_hosts/site_default/uefi-metadata-items/auth - && \
 		vault secrets enable -path=nicoca pki 2>/dev/null || true && \
 		vault secrets tune -max-lease-ttl=87600h nicoca" && \
 	echo "Importing CA into Vault PKI..." && \
@@ -560,15 +564,25 @@ status:
 		awk '{count[$$3]++} END {for (s in count) printf "%s: %d  ", s, count[s]; print ""}' || \
 	echo "(not deployed)"
 
+## reset-dpu-endpoint BMC_IP=<ip> — Re-trigger preingestion for a static-IP DPU whose
+## preingestion_state is stuck at "complete" but has no machine record (e.g. after a
+## site-pg crash). Resets the forge explored_endpoint back to initial state so
+## site-explorer runs the full preingestion cycle again.
+reset-dpu-endpoint:
+	@[ -n "$(BMC_IP)" ] || { echo "Usage: make reset-dpu-endpoint BMC_IP=<ip>"; exit 1; }
+	$(eval _SITE_PG_POD := $(shell oc get pods -n nico-system \
+	  -l postgres-operator.crunchydata.com/role=master \
+	  --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1))
+	$(eval _NICO_PASS := $(shell oc get secret nico-site-pg-pguser-nico -n nico-system \
+	  -o jsonpath='{.data.password}' | base64 -d))
+	@echo "Resetting preingestion state for $(BMC_IP) on pod $(_SITE_PG_POD)..."
+	oc exec $(_SITE_PG_POD) -n nico-system -c database -- \
+	  env PGPASSWORD="$(_NICO_PASS)" psql -U nico -d nico -h 127.0.0.1 -c \
+	  "UPDATE explored_endpoints \
+	   SET preingestion_state = '{\"state\": \"initial\"}'::jsonb, \
+	       exploration_requested = true \
+	   WHERE address = '$(BMC_IP)';" 2>&1
+	@echo "Done — site-explorer will re-run preingestion for $(BMC_IP) within ~2 minutes."
+
 undeploy:
-	helm uninstall -n nico-system nico-flow 2>/dev/null || true
-	helm uninstall -n nico-system nico-rest-site-agent 2>/dev/null || true
-	helm uninstall -n nico-system nico-core 2>/dev/null || true
-	helm uninstall -n nico-system nico-site-infra 2>/dev/null || true
-	oc delete namespace nico-system 2>/dev/null || true
-	helm uninstall -n nico-rest nico-rest 2>/dev/null || true
-	helm uninstall -n nico-rest temporal 2>/dev/null || true
-	helm uninstall -n nico-rest nico-rest-infra 2>/dev/null || true
-	oc delete namespace nico-rest 2>/dev/null || true
-	oc delete namespace rhbk-operator 2>/dev/null || true
-	helm uninstall nvidia-infra-controller-prereqs 2>/dev/null || true
+	bash cleanup.sh

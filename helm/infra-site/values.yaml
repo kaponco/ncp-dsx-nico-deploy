@@ -230,7 +230,9 @@ postgresql:
   enabled: true
   instances: 1
   storage:
-    size: 5Gi
+    size: 20Gi
+  backupStorage:
+    size: 6Gi
 
 # =============================================================================
 # nico-rest-common — shared secrets for site profile

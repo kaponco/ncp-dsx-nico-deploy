@@ -13,7 +13,9 @@ postgresql:
   enabled: true
   instances: 1
   storage:
-    size: 5Gi
+    size: 40Gi
+  backupStorage:
+    size: 10Gi
 
 nico-rest-common:
   secrets:

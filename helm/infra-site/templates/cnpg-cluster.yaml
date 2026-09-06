@@ -32,7 +32,7 @@ spec:
           - "ReadWriteOnce"
         resources:
           requests:
-            storage: 5Gi
+            storage: {{ .Values.postgresql.storage.size | default "20Gi" }}
   users:
     - name: nico
       databases:
@@ -64,7 +64,7 @@ spec:
                 - "ReadWriteOnce"
               resources:
                 requests:
-                  storage: 1Gi
+                  storage: {{ .Values.postgresql.backupStorage.size | default "6Gi" }}
 ---
 apiVersion: v1
 kind: ConfigMap
