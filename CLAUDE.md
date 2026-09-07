@@ -107,6 +107,7 @@ helm/
   values/                            Values overrides for upstream charts
     nico-rest.yaml                     REST API, workflow, site-manager, credsmgr
     nico-core.yaml                     Core tier (all services enabled)
+    nico-core-mat.yaml                 machine-a-tron TEST overlay (RBAC bypass, emulator net) — MAT=1 only
     nico-rest-site-agent.yaml          Site-agent (Temporal client)
   infra-cloud/                       Red Hat cloud infrastructure add-ons
     Chart.yaml                         Depends on: Temporal chart
@@ -223,6 +224,71 @@ Each kustomize patch maps to one upstream PR:
 | `fix-db-sslmode`, `fix-db-pullpolicy`, `fix-db-migrate-args` | DB migration robustness |
 | `fix-api-wait-keycloak` | Init container waiting for Keycloak OIDC |
 | `fix-api-trust-ca` | CA bundle init container for internal TLS trust |
+
+## Post-Deploy Steps
+
+After `make deploy-cloud`, these manual steps are required:
+
+### Patch Keycloak Route with CA Certificate
+
+The Keycloak route uses `reencrypt` TLS but the Helm template does not
+inject the `destinationCACertificate`. Without it, the OpenShift router
+cannot verify Keycloak's backend TLS and the route returns 503. Requires
+`jq` (also checked by `make check-prereqs`). Run:
+
+```bash
+CA=$(oc get secret nico-root-ca-secret -n cert-manager \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d)
+
+oc patch route keycloak -n rhbk-operator \
+  --type merge -p "$(jq -n --arg ca "$CA" '{"spec":{"tls":{"destinationCACertificate":$ca}}}')"
+```
+
+### Bootstrap the Organization
+
+The API requires an Infrastructure Provider and Tenant before resource
+endpoints work. These GET endpoints auto-create the entities.
+
+The `ncx-service` client secret may contain characters (`+`, `/`) that
+`curl -d` corrupts; use `--data-urlencode`. The K8s `keycloak-client-secret`
+may be stale — fetch the authoritative value from the Keycloak admin API.
+The org name in the URL is derived from the Keycloak realm role prefix
+(`ncx:NICO_PROVIDER_ADMIN` → org `ncx`):
+
+```bash
+API_URL="https://nico-rest-api-nico-rest.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
+KC_URL="https://keycloak-rhbk-operator.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
+
+_ADMIN_USER=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+  -o jsonpath='{.data.username}' | base64 -d)
+_ADMIN_PASS=$(oc get secret keycloak-admin-secret -n rhbk-operator \
+  -o jsonpath='{.data.password}' | base64 -d)
+_ADMIN_TOKEN=$(curl -sk -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=admin-cli \
+  -d "username=$_ADMIN_USER" -d "password=$_ADMIN_PASS" | jq -r .access_token)
+_CLIENT_UUID=$(curl -sk -H "Authorization: Bearer $_ADMIN_TOKEN" \
+  "$KC_URL/admin/realms/nico/clients?clientId=ncx-service" | jq -r '.[0].id')
+_CLIENT_SECRET=$(curl -sk -H "Authorization: Bearer $_ADMIN_TOKEN" \
+  "$KC_URL/admin/realms/nico/clients/$_CLIENT_UUID" | jq -r .secret)
+
+TOKEN=$(curl -sk -X POST "$KC_URL/realms/nico/protocol/openid-connect/token" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=ncx-service" \
+  --data-urlencode "client_secret=$_CLIENT_SECRET" \
+  | jq -r .access_token)
+
+[ -n "$API_URL" ] && [ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "API_URL/TOKEN not set"; exit 1; }
+```
+
+Then bootstrap the org:
+
+```bash
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/ncx/nico/infrastructure-provider/current"
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/v2/org/ncx/nico/tenant/current"
+```
 
 ## Conventions
 

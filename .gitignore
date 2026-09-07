@@ -10,3 +10,8 @@ helm/nico-site/charts/
 helm/nico-site/Chart.lock
 helm/nico-temporal/charts/
 helm/nico-temporal/Chart.lock
+helm/infra-cloud/charts/
+helm/infra-site/charts/
+*kubeconfig*
+.idea
+*.tgz

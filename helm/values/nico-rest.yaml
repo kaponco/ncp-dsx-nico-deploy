@@ -8,7 +8,7 @@
 
 global:
   image:
-    repository: quay.io/fdupont-redhat
+    repository: quay.io/rh-ee-skapon
     tag: latest
     pullPolicy: IfNotPresent
   certificate:

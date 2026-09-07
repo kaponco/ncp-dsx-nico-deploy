@@ -14,6 +14,7 @@ RUN --mount=type=secret,id=rhsm_org \
     subscription-manager register \
       --org="$(cat /run/secrets/rhsm_org)" \
       --activationkey="$(cat /run/secrets/rhsm_activationkey)" && \
+    subscription-manager repos --enable codeready-builder-for-rhel-10-x86_64-rpms && \
     dnf install -y --allowerasing \
     rust-toolset \
     postgresql-server postgresql-contrib \
@@ -48,8 +49,8 @@ ENV DATABASE_URL="postgresql://%2Frun%2Fpostgresql"
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/workspace/target \
     su postgres -c "pg_ctl start -D /var/lib/pgsql/data -l /tmp/pg.log -w -o '-k /run/postgresql'" && \
-    cargo build --release -p carbide-admin-cli && \
-    cp /workspace/target/release/carbide-admin-cli /usr/local/bin/nico-admin-cli
+    cargo build --release -p nico-admin-cli && \
+    cp /workspace/target/release/nico-admin-cli /usr/local/bin/nico-admin-cli
 
 # --- Runtime stage ---
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest

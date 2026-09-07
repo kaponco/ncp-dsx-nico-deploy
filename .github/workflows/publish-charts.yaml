@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'helm/nvidia-infra-controller-*/**'
+      - 'helm/**'
       - '.github/workflows/publish-charts.yaml'
   workflow_dispatch:
 
@@ -40,12 +40,14 @@ jobs:
 
       - name: Build dependencies
         run: |
-          helm dependency build helm/nvidia-infra-controller-cloud/
-          helm dependency build helm/nvidia-infra-controller-site/
+          helm dependency build helm/infra-cloud/
+          helm dependency build helm/infra-site/
 
       - name: Package and push charts
         run: |
-          for chart in nvidia-infra-controller-prereqs nvidia-infra-controller-cloud nvidia-infra-controller-site; do
-            helm package helm/$chart/
-            helm push ${chart}-*.tgz ${{ env.CHART_PREFIX }}
+          for chart_dir in nvidia-infra-controller-prereqs infra-cloud infra-site; do
+            helm package helm/$chart_dir/
+          done
+          for tgz in *.tgz; do
+            helm push "$tgz" ${{ env.CHART_PREFIX }}
           done

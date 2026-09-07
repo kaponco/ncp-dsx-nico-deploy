@@ -13,7 +13,9 @@ postgresql:
   enabled: true
   instances: 1
   storage:
-    size: 5Gi
+    size: 40Gi
+  backupStorage:
+    size: 10Gi
 
 nico-rest-common:
   secrets:
@@ -35,7 +37,6 @@ temporal:
     replicaCount: 1
     image:
       pullPolicy: IfNotPresent
-    securityContext: null
     metrics:
       annotations:
         enabled: true
@@ -143,7 +144,6 @@ temporal:
     frontend:
       replicaCount: 1
       readinessProbe:
-        grpc: null
         tcpSocket:
           port: 7233
         initialDelaySeconds: 10
