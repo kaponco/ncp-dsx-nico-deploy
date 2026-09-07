@@ -33,17 +33,17 @@ jobs:
 
       - name: Build dependencies
         run: |
-          helm dependency build helm/nvidia-infra-controller-cloud/
-          helm dependency build helm/nvidia-infra-controller-site/
+          helm dependency build helm/infra-cloud/
+          helm dependency build helm/infra-site/
 
       - name: Lint
         run: |
           helm lint helm/nvidia-infra-controller-prereqs/
-          helm lint helm/nvidia-infra-controller-cloud/
-          helm lint helm/nvidia-infra-controller-site/
+          helm lint helm/infra-cloud/
+          helm lint helm/infra-site/
 
       - name: Template (dry-run)
         run: |
           helm template nvidia-infra-controller-prereqs helm/nvidia-infra-controller-prereqs/ > /dev/null
-          helm template nvidia-infra-controller-cloud helm/nvidia-infra-controller-cloud/ > /dev/null
-          helm template nvidia-infra-controller-site helm/nvidia-infra-controller-site/ > /dev/null
+          helm template nvidia-infra-controller-cloud-infra helm/infra-cloud/ > /dev/null
+          helm template nvidia-infra-controller-site-infra helm/infra-site/ > /dev/null
