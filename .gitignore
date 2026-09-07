@@ -14,3 +14,4 @@ helm/infra-cloud/charts/
 helm/infra-site/charts/
 *kubeconfig*
 .idea
+*.tgz
