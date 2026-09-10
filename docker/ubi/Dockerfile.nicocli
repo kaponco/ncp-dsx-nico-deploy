@@ -5,8 +5,9 @@
 # Auto-generated from OpenAPI spec, supports all API endpoints.
 # Build context: infra-controller/rest-api
 
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
-USER root
+USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
 
@@ -20,8 +21,10 @@ RUN --mount=type=cache,target=/root/go/pkg/mod   \
     -o /app/nicocli \
     ./cli/cmd/cli
 
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest
 
 COPY --from=builder /app/nicocli /usr/local/bin/nicocli
 
+USER 1001
 ENTRYPOINT ["nicocli"]

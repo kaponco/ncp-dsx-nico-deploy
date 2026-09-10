@@ -5,6 +5,7 @@
 # Build context: infra-controller repo root
 
 # --- Builder stage (reuses nico-core build) ---
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi:latest AS builder
 
 RUN --mount=type=secret,id=rhsm_org \
@@ -53,6 +54,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cp /workspace/target/release/nico-admin-cli /usr/local/bin/nico-admin-cli
 
 # --- Runtime stage ---
+# hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi-micro:latest
 
 COPY --from=builder /usr/local/bin/nico-admin-cli /usr/local/bin/nico-admin-cli
