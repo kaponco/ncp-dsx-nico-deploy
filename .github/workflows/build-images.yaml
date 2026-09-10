@@ -6,7 +6,7 @@ on:
   pull_request:
     paths:
       - 'docker/ubi/**'
-      - 'helm/vendor/infra-controller'
+      - 'helm/vendor/infra-controller/**'
       - '.github/workflows/build-images.yaml'
   push:
     tags: ['v*']
