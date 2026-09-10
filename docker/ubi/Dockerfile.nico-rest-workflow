@@ -4,6 +4,7 @@
 # Build stage
 # hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
+# hadolint ignore=DL3002
 USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
@@ -24,6 +25,7 @@ COPY cert-manager/ ./cert-manager/
 
 RUN mkdir -p /var/secrets/temporal/certs
 
+# hadolint ignore=DL3002
 USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace/workflow

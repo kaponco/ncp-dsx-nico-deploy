@@ -7,7 +7,9 @@
 # --- Builder stage (reuses nico-core build) ---
 # hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/ubi:latest AS builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# hadolint ignore=DL3041
 RUN --mount=type=secret,id=rhsm_org \
     --mount=type=secret,id=rhsm_activationkey \
     rm -f /etc/rhsm-host && \

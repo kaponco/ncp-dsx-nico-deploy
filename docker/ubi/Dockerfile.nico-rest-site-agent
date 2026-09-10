@@ -4,6 +4,7 @@
 # Build stage
 # hadolint ignore=DL3007
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
+# hadolint ignore=DL3002
 USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace
@@ -20,6 +21,7 @@ COPY site-manager/ ./site-manager/
 COPY site-workflow/ ./site-workflow/
 COPY cert-manager/ ./cert-manager/
 
+# hadolint ignore=DL3002
 USER 0
 ENV CGO_ENABLED=0
 WORKDIR /workspace/site-agent

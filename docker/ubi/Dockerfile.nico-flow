@@ -6,6 +6,7 @@
 FROM registry.access.redhat.com/ubi10/go-toolset:latest AS builder
 ENV CGO_ENABLED=0
 
+# hadolint ignore=DL3002
 USER 0
 WORKDIR /workspace
 
@@ -19,6 +20,7 @@ COPY common/ ./common/
 COPY db/ ./db/
 COPY flow/ ./flow/
 
+# hadolint ignore=DL3002
 USER 0
 WORKDIR /workspace/flow
 RUN --mount=type=cache,target=/root/go/pkg/mod   \
