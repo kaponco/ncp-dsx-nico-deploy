@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# NodePort service exposing the nico-site-pg primary PostgreSQL instance
+# (namespace: nico-system) for external access from dev laptops / PGAdmin.
+# TEST CLUSTERS ONLY — do not apply to production.
+#
+# Apply:  oc apply -f hack/nodeport-site-pg.yaml
+# Remove: oc delete -f hack/nodeport-site-pg.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nico-site-pg-nodeport
+  namespace: nico-system
+  labels:
+    app: nico-site-pg-nodeport
+    purpose: dev-access
+spec:
+  type: NodePort
+  selector:
+    postgres-operator.crunchydata.com/cluster: nico-site-pg
+    postgres-operator.crunchydata.com/role: master
+  ports:
+    - name: postgres
+      protocol: TCP
+      port: 5432
+      targetPort: 5432
+      nodePort: 30533

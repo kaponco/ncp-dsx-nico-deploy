@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# NodePort service exposing the nico-cloud-pg primary PostgreSQL instance
+# (namespace: nico-rest) for external access from dev laptops / PGAdmin.
+# TEST CLUSTERS ONLY — do not apply to production.
+#
+# Apply:  oc apply -f hack/nodeport-cloud-pg.yaml
+# Remove: oc delete -f hack/nodeport-cloud-pg.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nico-cloud-pg-nodeport
+  namespace: nico-rest
+  labels:
+    app: nico-cloud-pg-nodeport
+    purpose: dev-access
+spec:
+  type: NodePort
+  selector:
+    postgres-operator.crunchydata.com/cluster: nico-cloud-pg
+    postgres-operator.crunchydata.com/role: master
+  ports:
+    - name: postgres
+      protocol: TCP
+      port: 5432
+      targetPort: 5432
+      nodePort: 30532
