@@ -3,21 +3,90 @@
 Working notes for manually onboarding a DPU (Data Processing Unit) into NICo.
 Prerequisites: BMC IP address and password known upfront (no DHCP discovery).
 
+---
+
+## Step 0 — Network Prerequisites (must be done before Step 7)
+
+NICo's automated provisioning requires **Layer 2 connectivity** between the DPU's data plane
+ports and NICo's DHCP/PXE/DNS services running in the `nico-system` namespace. Without this,
+two critical flows are blocked:
+
+1. **DPU HTTP Boot** (Step 7): After NICo configures and reboots the DPU, the DPU must UEFI
+   HTTP Boot via its data plane interface (eth0). It needs a DHCP response from NICo (not the
+   lab DHCP) to get an IP and boot URI, then downloads the BFB image from NICo's PXE service.
+
+2. **Host PXE Discovery** (Step 9): The host PXE boots **through the DPU's data plane** —
+   the DPU acts as a network bridge. The host needs NICo's DHCP to get an IP and the
+   `scout.efi` boot file. Same L2 path as above.
+
+### What the lab/network team needs to configure
+
+The DPU data plane ports (eth0/eth1, MACs from Step 2a) must be on a VLAN/subnet that
+can reach the NICo DHCP and PXE services. There are two approaches:
+
+**Option A — DHCP Relay (recommended for shared lab networks)**
+
+Configure the lab switch to relay DHCP requests from the DPU data plane VLAN to the NICo
+DHCP service ClusterIP:
+
+```bash
+# Get the NICo DHCP and PXE service ClusterIPs
+oc get svc -n nico-system nico-dhcp nico-pxe nico-dns
+```
+
+The relay target is the DHCP service ClusterIP on UDP port 67. The OpenShift nodes must
+be able to route the relayed traffic to the ClusterIP network.
+
+**Option B — Dedicated VLAN with direct L2 access**
+
+Place the DPU data plane ports and the OpenShift worker node(s) running NICo pods on the
+same VLAN. The DHCP pod needs `hostNetwork: true` or a Multus macvlan network attachment
+to bind directly to the node's interface on that VLAN.
+
+### Required network paths
+
+| From | To | Protocol | Purpose |
+|---|---|---|---|
+| DPU eth0 | NICo DHCP (`nico-dhcp` svc) | UDP 67/68 | IP assignment + boot URI |
+| DPU eth0 | NICo PXE (`nico-pxe` svc) | TCP 8080 | BFB image download (HTTP Boot) |
+| DPU eth0 | NICo DNS (`nico-dns` svc) | UDP/TCP 53 | Name resolution |
+| Host NIC (via DPU bridge) | Same as above | Same | Host PXE discovery |
+
+### Verification
+
+After the network is configured, verify from a pod on the same network:
+
+```bash
+# Confirm NICo DHCP is listening (should show the service responding)
+oc get svc -n nico-system nico-dhcp
+
+# Check DHCP pod logs for socket bind success (no DHCPSRV_NO_SOCKETS_OPEN error)
+oc logs -n nico-system -l app.kubernetes.io/name=nico-dhcp --tail=20 | grep -E "SOCKET|STARTED"
+```
+
+> **Without this network setup, NICo will configure and reboot the DPU (Steps 1–6 succeed)
+> but the DPU will fall back to its existing OS and never download the NICo BFB. The machine
+> state controller will stay stuck at `dpunotready.init` indefinitely.**
+
+---
+
 ## Environment
 
 | Variable | Value |
 |---|---|
 | Kubeconfig | `nico3_kubeconfig_new` — set `export KUBECONFIG=./nico3_kubeconfig_new` (repo root) before running any `oc` command |
-| DPU BMC IP | `10.6.136.214` |
+| DPU BMC IP | `10.6.136.28` |
 | DPU BMC user | `root` |
-| DPU BMC password | `4PJi-8D3k_14mS` |
-| Host BMC IP | `10.6.136.15` |
-| Host BMC user | `ADMIN` |
-| Host BMC password | `0penBmc1` |
-| Host BMC MAC | `7C:C2:55:86:CA:07` |
-| Host serial number | `S900770X4511818` |
-| Host Redfish system ID | `1` |
-| Host architecture | ARM (aarch64) |
+| DPU BMC password | `bluefield012` |
+| DPU serial number | `MT2337XZ05A7` |
+| DPU BMC Manager MAC | `a0:88:c2:75:91:8f` (use this for registration, not oob0) |
+| Host BMC IP | `10.6.136.44` |
+| Host BMC user | `root` |
+| Host BMC password | `calvin` |
+| Host BMC MAC | `c8:4b:d6:86:f3:a0` |
+| Host serial number | `MXFC40029800IU` |
+| Host Redfish system ID | `System.Embedded.1` |
+| Host architecture | x86_64 (Dell PowerEdge R750) |
 
 > **Two separate BMCs:** NICo treats the DPU BMC and the host motherboard BMC as independent
 > Redfish endpoints. Both must be registered. The DPU BMC manages the BlueField card; the host
@@ -30,46 +99,85 @@ Prerequisites: BMC IP address and password known upfront (no DHCP discovery).
 
 ---
 
-## Step 1 — Read DPU System Info via Redfish
+## Step 1 — Probe Both BMCs via Redfish
 
 > **Network access:** These `curl` commands run directly from your workstation and require
 > direct network access to the BMC IP. If the BMC is only reachable from inside the cluster,
 > run them from a throwaway pod: `oc run bmc-probe --rm -it --restart=Never --image=registry.access.redhat.com/ubi9/ubi -- bash`
 
-First, enumerate available system IDs (the ID is not always `1`):
+### 1a — DPU BMC system info
+
+Enumerate available system IDs (the ID is not always `1`):
 
 ```bash
-curl -sk -u root:4PJi-8D3k_14mS https://10.6.136.214/redfish/v1/Systems | python3 -m json.tool
+curl -sk -u root:bluefield012 https://10.6.136.28/redfish/v1/Systems | jq '.Members[]."@odata.id"'
 ```
 
-**Result:** System ID is `Bluefield` (NVIDIA BlueField DPU).
+**Result:** System ID is `Bluefield`.
 
 ```bash
-curl -sk -u root:4PJi-8D3k_14mS https://10.6.136.214/redfish/v1/Systems/Bluefield | python3 -m json.tool
+curl -sk -u root:bluefield012 https://10.6.136.28/redfish/v1/Systems/Bluefield | jq '{SerialNumber, UUID, Model, Status}'
 ```
 
 **Result:**
 
 | Field | Value |
 |---|---|
-| SerialNumber | `MT240230076V` |
-| UUID | `6e596a0f-e1b0-ee11-8000-58a2e1678682` |
-| Processor | ARMv8 |
+| SerialNumber | `MT2337XZ05A7` |
+| UUID | `00000000-0000-0000-0000-000000000000` |
+| Model | BlueField-3 DPU |
 | Health | OK / Enabled |
+
+### 1b — Host BMC system info
+
+```bash
+curl -sk -u root:calvin https://10.6.136.44/redfish/v1/Systems | jq '.Members[]."@odata.id"'
+```
+
+Note the host system ID (e.g. `System.Embedded.1`, `1`, etc.) and use it below:
+
+```bash
+curl -sk -u root:calvin https://10.6.136.44/redfish/v1/Systems/System.Embedded.1 | jq '{SerialNumber, UUID, Model, Status}'
+```
+
+**Result:**
+
+| Field | Value |
+|---|---|
+| SerialNumber | `MXFC40029800IU` |
+| Model | Dell PowerEdge R750 |
+| Health | OK / Enabled |
+
+### 1c — Host BMC MAC address
+
+Query the Manager's Ethernet Interfaces (the BMC network port, not the host's NICs):
+
+```bash
+curl -sk -u root:calvin https://10.6.136.44/redfish/v1/Managers/iDRAC.Embedded.1/EthernetInterfaces/NIC.1 \
+  | jq '{MACAddress, IPv4Addresses: [.IPv4Addresses[].Address]}'
+```
+
+**Result:**
+
+| Value | Result |
+|---|---|
+| Host BMC MAC | `c8:4b:d6:86:f3:a0` |
+| Host BMC IP | `10.6.136.44` |
 
 ---
 
-## Step 2 — Read Network Interface MACs
+## Step 2 — Read DPU Network Interface MACs
 
 MAC addresses are required for NICo machine registration.
 
-**Result:** Three interfaces: `eth0`, `eth1` (data plane), `oob0` (out-of-band management).
+### 2a — Data plane and OOB interfaces
 
 ```bash
 for iface in eth0 eth1 oob0; do
-  echo "=== $iface ==="; curl -sk -u root:4PJi-8D3k_14mS \
-    https://10.6.136.214/redfish/v1/Systems/Bluefield/EthernetInterfaces/$iface \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('MACAddress','n/a'), d.get('SpeedMbps','?'), 'Mbps', d.get('LinkStatus','?'))"
+  echo "=== $iface ==="
+  curl -sk -u root:bluefield012 \
+    https://10.6.136.28/redfish/v1/Systems/Bluefield/EthernetInterfaces/$iface \
+    | jq '{MACAddress, SpeedMbps, LinkStatus}'
 done
 ```
 
@@ -77,9 +185,30 @@ done
 
 | Interface | MAC | Speed | Status | Role |
 |---|---|---|---|---|
-| eth0 | `02:ef:36:6e:d2:48` | 200 Gbps | LinkUp | Data plane (primary) |
-| eth1 | `02:02:66:83:a8:7d` | — | NoLink | Data plane (not connected) |
-| oob0 | `58:a2:e1:67:86:a6` | 1 Gbps | LinkUp | OOB management (`10.6.136.214`) |
+| eth0 | `02:de:1f:c2:c5:11` | 100 Gbps | LinkUp | Data plane (primary) |
+| eth1 | `02:31:dd:95:f6:18` | 100 Gbps | LinkUp | Data plane |
+| oob0 | `a0:88:c2:75:91:8e` | 1 Gbps | LinkUp | OOB management (`10.6.136.28`) |
+
+### 2b — BMC Manager MAC (the MAC NICo uses)
+
+> **Important:** The oob0 MAC (from Systems) and the BMC Manager MAC (from Managers)
+> can differ by one byte on BlueField DPUs. NICo internally uses the **Manager MAC**
+> for validation. Always use the Manager MAC for expected-machine registration and
+> Vault credential seeding — not the oob0 MAC.
+
+```bash
+curl -sk -u root:bluefield012 \
+  https://10.6.136.28/redfish/v1/Managers/Bluefield_BMC/EthernetInterfaces/eth0 \
+  | jq '{MACAddress, LinkStatus}'
+```
+
+**Result:**
+
+| Value | Result |
+|---|---|
+| BMC Manager MAC | `a0:88:c2:75:91:8f` |
+
+Use this MAC (not oob0) for Steps 3 and 4.
 
 ---
 
@@ -89,7 +218,6 @@ done
 If a BMC has been pre-configured with a **non-factory password**, you must also seed a
 per-machine entry so site-explorer uses the correct credential instead of the site-wide default.
 
-Seed credentials for **both** the DPU BMC and the host BMC before NICo attempts to contact them.
 Skip any BMC whose password is the factory default (`0penBmc`).
 
 ### Determine the Vault root token
@@ -107,9 +235,9 @@ Site-explorer looks up `machines/bmc/{MAC}/root` first before falling back to th
 The MAC must be in uppercase, colon-separated format. Seed both cases to be safe:
 
 ```bash
-BMC_MAC="58:a2:e1:67:86:a6"         # DPU oob0 MAC from Step 2
+BMC_MAC="a0:88:c2:75:91:8f"         # DPU BMC Manager MAC from Step 2b
 BMC_MAC_UPPER=$(echo "$BMC_MAC" | tr '[:lower:]' '[:upper:]')
-BMC_PASSWORD="4PJi-8D3k_14mS"       # actual current password (replace as needed)
+BMC_PASSWORD="bluefield012"
 
 for MAC in "$BMC_MAC" "$BMC_MAC_UPPER"; do
   oc exec $VAULT_POD -n $VAULT_NS -- sh -c \
@@ -121,29 +249,26 @@ done
 
 ### 3b — Seed the host BMC credential
 
+Use the host BMC MAC from Step 1c:
+
 ```bash
-HOST_BMC_MAC="7C:C2:55:86:CA:07"    # from Step 5c Redfish probe (Manager/1/EthernetInterfaces/1)
+HOST_BMC_MAC="c8:4b:d6:86:f3:a0"   # host BMC MAC from Step 1c
 HOST_BMC_MAC_UPPER=$(echo "$HOST_BMC_MAC" | tr '[:lower:]' '[:upper:]')
 HOST_BMC_MAC_LOWER=$(echo "$HOST_BMC_MAC" | tr '[:upper:]' '[:lower:]')
-HOST_BMC_PASSWORD="0penBmc1"
+HOST_BMC_PASSWORD="calvin"
 
 for MAC in "$HOST_BMC_MAC_UPPER" "$HOST_BMC_MAC_LOWER"; do
   oc exec $VAULT_POD -n $VAULT_NS -- sh -c \
     "export VAULT_TOKEN=$VAULT_TOKEN VAULT_SKIP_VERIFY=true && \
-     printf '{\"UsernamePassword\":{\"username\":\"ADMIN\",\"password\":\"$HOST_BMC_PASSWORD\"}}' \
+     printf '{\"UsernamePassword\":{\"username\":\"root\",\"password\":\"$HOST_BMC_PASSWORD\"}}' \
      | vault kv put secrets/machines/bmc/$MAC/root -"
 done
 ```
 
-> **Chicken-and-egg:** You need the host BMC MAC to seed the credential, but you may not
-> know it until you probe the host BMC in Step 5c. If so, run Step 5c's Redfish probe first
-> to get the MAC, then come back here to seed the credential before registering the
-> expected-machine.
-
 ### Verify all entries
 
 ```bash
-for MAC in "$BMC_MAC" "$BMC_MAC_UPPER" "$HOST_BMC_MAC" "$HOST_BMC_MAC_UPPER"; do
+for MAC in "$BMC_MAC" "$BMC_MAC_UPPER" "$HOST_BMC_MAC_UPPER" "$HOST_BMC_MAC_LOWER"; do
   echo "=== $MAC ==="
   oc exec $VAULT_POD -n $VAULT_NS -- sh -c \
     "export VAULT_TOKEN=$VAULT_TOKEN VAULT_SKIP_VERIFY=true && \
@@ -168,8 +293,8 @@ echo "Next call is using a password to the specific BMC in the lab - which may b
 oc delete pod bmc-check --ignore-not-found=true 2>/dev/null
 oc run bmc-check --restart=Never \
   --image=registry.access.redhat.com/ubi9/ubi \
-  -- curl -sk -u root:4PJi-8D3k_14mS \
-  https://10.6.136.214/redfish/v1/Systems/Bluefield 2>/dev/null
+  -- curl -sk -u root:bluefield012 \
+  https://10.6.136.28/redfish/v1/Systems/Bluefield 2>/dev/null
 oc wait pod/bmc-check --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s
 BMC_RESP=$(oc logs pod/bmc-check)
 oc delete pod bmc-check --ignore-not-found=true 2>/dev/null
@@ -186,7 +311,7 @@ echo "$BMC_RESP" | jq -e '
 Expected output:
 ```json
 {
-  "SerialNumber": "MT240230076V",
+  "SerialNumber": "<serial-from-step-1>",
   "State": "Enabled",
   "Health": "OK"
 }
@@ -242,7 +367,7 @@ SITE_ID=<site-id-from-above>
 > The correct flow is: create an **expected-machine** record (keyed on the BMC MAC address),
 > then NICo matches it when it discovers the DPU at the site.
 >
-> The BMC MAC is `oob0`: `58:a2:e1:67:86:a6`
+> The BMC MAC is `oob0` — use the MAC from Step 2
 >
 > **Static IP caveat:** NICo typically discovers machines via DHCP (BMC sends DHCP request →
 > NICo matches by MAC). If the BMC is configured with a static IP and won't send DHCP,
@@ -250,6 +375,8 @@ SITE_ID=<site-id-from-above>
 
 ```bash
 # BMC_MAC and BMC_PASSWORD set in Step 3; SITE_ID set in Step 4c above
+# DPU_SERIAL from Step 1
+DPU_SERIAL="MT2337XZ05A7"
 curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   "$API_URL/v2/org/ncx/nico/expected-machine" \
@@ -257,52 +384,23 @@ curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
     --arg siteId "$SITE_ID" \
     --arg bmcMacAddress "$BMC_MAC" \
     --arg bmcPassword "$BMC_PASSWORD" \
-    '{siteId:$siteId,bmcIp:"10.6.136.214",bmcMacAddress:$bmcMacAddress,bmcUsername:"root",
-      bmcPassword:$bmcPassword,chassisSerialNumber:"MT240230076V",name:"dpu-bf3-01",
+    --arg serial "$DPU_SERIAL" \
+    '{siteId:$siteId,bmcIpAddress:"10.6.136.28",bmcMacAddress:$bmcMacAddress,bmcUsername:"root",
+      bmcPassword:$bmcPassword,chassisSerialNumber:$serial,name:"dpu-bf3-01",
       manufacturer:"NVIDIA",model:"BlueField-3"}')" \
   | jq .
 ```
 
-**Result:** HTTP 201. Machine registered with UUID (format 81834a63-1e39-44f4-90a7-6a24e9c17ba6 ) .
+**Result:** Expect HTTP 201 with a UUID. Save it as `EXPECTED_MACHINE_ID`.
 
 ---
 
-## Step 5a — Set BMC IP on Expected Machine (static-IP BMCs only)
-
-NICo normally discovers BMC addresses via DHCP (the BMC sends a DHCP request, NICo
-matches it by MAC and learns the IP). When the BMC has a **static IP** and will never
-send a DHCP request, NICo cannot discover it on its own — the `bmcIpAddress` field on
-the expected-machine record stays `null` and no `explored_endpoint` is created.
-
-Verify the field is missing:
-
-```bash
-curl -sk -H "Authorization: Bearer $TOKEN" \
-  "$API_URL/v2/org/ncx/nico/expected-machine" | jq '.[].bmcIpAddress'
-```
-
-If `null`, patch the expected-machine with the static BMC IP:
-
-```bash
-EXPECTED_MACHINE_ID=<id from Step 4d>
-
-curl -sk -X PATCH -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  "$API_URL/v2/org/ncx/nico/expected-machine/$EXPECTED_MACHINE_ID" \
-  -d '{"bmcIpAddress":"10.6.136.214"}' | jq .
-```
-
-After patching, NICo's site-explorer will create an `explored_endpoint` for this IP
-and begin the preingestion cycle within a few minutes.
-
----
-
-## Step 5b — Verify DPU Preingestion
+## Step 5a — Verify DPU Preingestion
 
 After registration, NICo's site-explorer contacts the BMC via Redfish and runs the
 preingestion cycle: BMC reset, NTP check, firmware check. This takes a few minutes.
 
-Monitor the preingestion state in the forge DB:
+Monitor (repeat until completed) the preingestion state in the forge DB:
 
 ```bash
 SITE_PG_POD=$(oc get pods -n nico-system \
@@ -313,7 +411,7 @@ NICO_PASS=$(oc get secret nico-site-pg-pguser-nico -n nico-system \
 
 oc exec $SITE_PG_POD -n nico-system -c database -- \
   env PGPASSWORD="$NICO_PASS" psql -U nico -d nico -h 127.0.0.1 \
-  -c "SELECT address, preingestion_state, exploration_requested FROM explored_endpoints WHERE address = '10.6.136.214';"
+  -c "SELECT address, preingestion_state, exploration_requested FROM explored_endpoints WHERE address = '10.6.136.28';"
 ```
 
 Expected progression:
@@ -322,16 +420,15 @@ Expected progression:
 3. → `{"state": "complete"}` — DPU fully preingested
 
 > **Note:** `machineId` on the expected-machine record stays `null` until the host is
-> discovered and paired with the DPU (Step 5c/9). The forge `machines` table will also be
-> empty until that point — this is **expected** for a static-IP DPU registration. Machine
-> records are only created as a host+DPU pair. The host BMC must also be registered (Step 5c)
-> before pairing can occur.
+> discovered and paired with the DPU (Step 5b/9). The forge `machines` table will also be
+> empty until that point — this is **expected**. Machine records are only created as a
+> host+DPU pair. The host BMC must also be registered (Step 5b) before pairing can occur.
 
 If `preingestion_state` is stuck at `complete` with no machine record (e.g. after a
 site-pg crash), use the recovery target:
 
 ```bash
-make reset-dpu-endpoint BMC_IP=10.6.136.214
+make reset-dpu-endpoint BMC_IP=10.6.136.28
 ```
 
 Check `nico-bmc-proxy` logs if the BMC is not being reached:
@@ -343,58 +440,24 @@ oc logs -n nico-system \
 
 ---
 
-## Step 5c — Register the Host BMC
+## Step 5b — Register the Host BMC
 
 NICo requires the host's own motherboard BMC (separate from the DPU BMC) to power-control
 the host, set boot order for PXE, and configure BIOS. Without it, NICo cannot progress
 beyond DPU preingestion — no machine record will be created.
 
-### Probe the host BMC via Redfish
-
-First, verify the host BMC is reachable and enumerate system IDs:
-
-```bash
-oc run host-bmc-check --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi -- bash -c \
-  "curl -sk -u ADMIN:0penBmc1 https://10.6.136.15/redfish/v1/Systems | python3 -m json.tool"
-```
-
-Then read the host system info (replace `System.Embedded.1` with the actual system ID):
-
-```bash
-oc run host-bmc-info --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi -- bash -c \
-  "curl -sk -u ADMIN:0penBmc1 https://10.6.136.15/redfish/v1/Systems/<system-id> | python3 -m json.tool"
-```
-
-Note the host's **SerialNumber** — needed for registration.
-
-To find the **host BMC MAC address**, query the Manager's Ethernet Interfaces (the BMC
-network port, not the host's NICs):
-
-```bash
-oc run host-bmc-mac --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi -- bash -c \
-  "curl -sk -u ADMIN:0penBmc1 \
-    https://10.6.136.15/redfish/v1/Managers/1/EthernetInterfaces/1 \
-    | python3 -c \"import sys,json; d=json.load(sys.stdin); print('MAC:', d.get('MACAddress'), 'IP:', [a.get('Address') for a in d.get('IPv4Addresses',[])])\""
-```
-
-**Result:** MAC `7C:C2:55:86:CA:07`, IP `10.6.136.15`.
-
-### Seed host BMC credential in Vault
-
-If not already done in Step 3b or 3c, seed the host BMC credential now (you need the MAC
-from the Redfish probe above). See Step 3b or 3c for the commands.
+The host BMC was already probed in Step 1b/1c and its credential seeded in Step 3b.
 
 ### Register the host as an expected-machine
 
 The host BMC is a separate expected-machine record. NICo will pair it with the DPU
 via serial number matching (the host BMC's PCIe inventory lists the BlueField DPU).
 
+Use the MAC and serial from Step 1b/1c:
+
 ```bash
-HOST_BMC_MAC="7C:C2:55:86:CA:07"
-HOST_SERIAL="S900770X4511818"
+HOST_BMC_MAC="c8:4b:d6:86:f3:a0"
+HOST_SERIAL="MXFC40029800IU"
 
 curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -403,22 +466,19 @@ curl -sk -X POST -H "Authorization: Bearer $TOKEN" \
     --arg siteId "$SITE_ID" \
     --arg bmcMacAddress "$HOST_BMC_MAC" \
     --arg serial "$HOST_SERIAL" \
-    '{siteId:$siteId,bmcIpAddress:"10.6.136.15",bmcMacAddress:$bmcMacAddress,
-      bmcUsername:"ADMIN",chassisSerialNumber:$serial,name:"arm-host-01"}')" \
+    '{siteId:$siteId,bmcIpAddress:"10.6.136.44",bmcMacAddress:$bmcMacAddress,
+      bmcUsername:"root",chassisSerialNumber:$serial,name:"host-01"}')" \
   | jq .
 ```
 
-> **Static IP:** If the host BMC also has a static IP (like the DPU BMC), include
-> `bmcIpAddress` in the POST. If omitted, apply the Step 5a patch afterwards.
-
 ### Verify host BMC preingestion
 
-Monitor the same way as Step 5b, but for the host BMC IP:
+Monitor (repeat until completed) the same way as Step 5a, but for the host BMC IP:
 
 ```bash
 oc exec $SITE_PG_POD -n nico-system -c database -- \
   env PGPASSWORD="$NICO_PASS" psql -U nico -d nico -h 127.0.0.1 \
-  -c "SELECT address, preingestion_state FROM explored_endpoints WHERE address = '10.6.136.15';"
+  -c "SELECT address, preingestion_state FROM explored_endpoints WHERE address = '10.6.136.44';"
 ```
 
 Wait for `{"state": "complete"}`. Once both the DPU and host BMC are preingested,
@@ -434,13 +494,13 @@ oc exec $SITE_PG_POD -n nico-system -c database -- \
   -c "SELECT host_bmc_ip, explored_dpus FROM explored_managed_hosts;"
 ```
 
-Expected: `host_bmc_ip` = `10.6.136.15` with the DPU's BMC IP in `explored_dpus`.
+Expected: `host_bmc_ip` = `10.6.136.44` with the DPU's BMC IP in `explored_dpus`.
 
 ---
 
 ## Step 6 — Verify DPU Data Plane Network Reachability
 
-eth0 (`02:ef:36:6e:d2:48`, 200Gbps) is LinkUp but must be on a network segment reachable
+The DPU eth0 interface (data plane primary, from Step 2) must be on a network segment reachable
 from NICo's DHCP/PXE services (`nico-dhcp`, `nico-pxe` in `nico-system`).
 
 Check that eth0 is on the management VLAN/subnet NICo expects for host PXE boot:
@@ -454,33 +514,14 @@ oc get configmap -n nico-system \
 A `subnet4` of `0.0.0.0/0` (catch-all) means the DHCP server will respond to any subnet —
 no subnet mismatch to worry about.
 
-### Verify L2 reachability from the cluster to eth0
-
-The DHCP config alone doesn't prove the network path works. Confirm that the cluster
-pods can actually reach the DPU data-plane interface at L2:
+### Verify DHCP and PXE services are listening
 
 ```bash
-# 1. Check the DPU eth0 IP via Redfish (if assigned)
-oc run net-check --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi -- bash -c \
-  "curl -sk -u root:4PJi-8D3k_14mS \
-    https://10.6.136.214/redfish/v1/Systems/Bluefield/EthernetInterfaces/eth0 \
-    | python3 -c \"import sys,json; d=json.load(sys.stdin); print('MAC:', d.get('MACAddress'), 'IPv4:', [a.get('Address') for a in d.get('IPv4Addresses',[])])\""
-
-# 2. Verify the DHCP pod can see ARP/traffic from eth0's MAC (02:ef:36:6e:d2:48)
-#    Check if NICo DHCP has received any requests from this MAC:
-oc logs -n nico-system -l app.kubernetes.io/name=nico-dhcp --tail=200 \
-  | grep -i "02:ef:36:6e:d2:48"
-
-# 3. Verify the NICo DHCP and PXE services are listening
 oc get svc -n nico-system | grep -E 'dhcp|pxe'
 ```
 
-If the DHCP log shows no traffic from eth0's MAC, the DPU data plane is not on
-a network segment reachable from the cluster — check VLAN tagging, physical cabling,
-or bridge configuration on the host/switch side.
-
-Without this reachability, the host cannot PXE boot through the DPU.
+Both services must be present. DHCP traffic from eth0 won't appear until NICo
+configures the DPU's network mode (after Step 7).
 
 ---
 
@@ -489,7 +530,7 @@ Without this reachability, the host cannot PXE boot through the DPU.
 Once `machineId` is populated, check the machine record and its state:
 
 ```bash
-MACHINE_ID=<machineId from step 5>
+MACHINE_ID=<machineId from the list above>
 
 curl -sk -H "Authorization: Bearer $TOKEN" \
   "$API_URL/v2/org/ncx/nico/machine/$MACHINE_ID" | jq '{state: .state, dpuStatus: .dpuStatus}'
