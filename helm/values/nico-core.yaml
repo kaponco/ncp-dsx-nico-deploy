@@ -32,6 +32,13 @@ nico-api:
   # the chart catching up.
   webAuth:
     mode: none
+  # Trust client certs issued by the site CA (CN=nico-root-ca) so
+  # nico-admin-cli can authenticate as ForgeAdminCLI via the internal
+  # RBAC layer. Pair with the nico-cli-client Vault PKI role created
+  # by vault-init and `make vault-admin-cert` to issue short-lived certs.
+  auth:
+    additionalIssuerCns:
+      - "nico-root-ca"
   # No legacy carbide-api.forge-system clients in this deployment, and we
   # don't otherwise own/create a forge-system namespace for the alias
   # Service to live in (createNamespace defaults to false upstream).

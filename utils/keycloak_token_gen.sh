@@ -40,5 +40,5 @@ if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
   exit 1
 fi
 
-echo "Token acquired:"
+#echo "Token acquired:"
 echo "$TOKEN"

@@ -5,7 +5,7 @@
 .PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
-.PHONY: deploy-site-infra vault-init ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
+.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 .PHONY: reset-dpu-endpoint
 
@@ -399,6 +399,8 @@ vault-init:
 	oc exec $$V -n $$NS -- sh -c "export VAULT_TOKEN=$$RT VAULT_SKIP_VERIFY=true && \
 		vault write nicoca/config/ca pem_bundle=@/tmp/ca-bundle.pem && \
 		vault write nicoca/roles/nico-cluster allow_any_name=true allowed_uri_sans='spiffe://*' max_ttl=720h ttl=720h key_type=ec key_bits=256 require_cn=false use_csr_common_name=true && \
+		echo 'Creating nico-cli-client PKI role for nico-admin-cli client certs...' && \
+		vault write nicoca/roles/nico-cli-client allow_any_name=true enforce_hostnames=false client_flag=true server_flag=false max_ttl=24h ttl=1h key_type=ec key_bits=256 ou=nico-cli-client && \
 		vault auth enable kubernetes 2>/dev/null || true && \
 		vault write auth/kubernetes/config kubernetes_host=https://\$$KUBERNETES_SERVICE_HOST:\$$KUBERNETES_SERVICE_PORT && \
 		echo 'path \"nicoca/sign/nico-cluster\" { capabilities = [\"create\", \"update\"] }' | vault policy write cert-manager-nico-policy - && \
@@ -429,6 +431,30 @@ vault-init:
 	echo "{\"apiVersion\":\"cert-manager.io/v1\",\"kind\":\"ClusterIssuer\",\"metadata\":{\"name\":\"vault-nico-issuer\"},\"spec\":{\"vault\":{\"path\":\"nicoca/sign/nico-cluster\",\"server\":\"https://vault.nico-system.svc:8200\",\"caBundle\":\"$$CA_B64\",\"auth\":{\"kubernetes\":{\"role\":\"cert-manager-nico-issuer\",\"mountPath\":\"/v1/auth/kubernetes\",\"secretRef\":{\"name\":\"vault-nicoca-issuer-token\",\"key\":\"token\"}}}}}}" | oc apply -f - && \
 	echo "=== Vault fully configured ==="
 
+ADMIN_CERT_DIR := $(HOME)/.nico
+
+# Issue a short-lived (24h) client certificate from Vault PKI for
+# nico-admin-cli. The cert's issuer CN (nico-root-ca) must be listed in
+# nico-api's auth.additionalIssuerCns for the internal RBAC to recognize
+# it as ForgeAdminCLI. Run after vault-init; re-run when the cert expires.
+vault-admin-cert:
+	@echo "=== Issuing nico-admin-cli client certificate ===" && \
+	NS=nico-system && \
+	V=vault-0 && \
+	RT=$$(oc get secret vault-unseal-secret -n $$NS -o jsonpath='{.data.root-token}' | base64 -d) && \
+        mkdir -p "$(ADMIN_CERT_DIR)" && \
+	CERT_JSON=$$(oc exec $$V -n $$NS -c vault -- sh -c " \
+		VAULT_ADDR=https://vault.nico-system:8200 \
+		VAULT_CACERT=/tmp/ca-bundle.pem \
+		VAULT_TOKEN=$$RT \
+		vault write -format=json nicoca/issue/nico-cli-client \
+			common_name=nico-admin ttl=24h") && \
+	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['certificate'])" > $(ADMIN_CERT_DIR)/admin-tls.crt && \
+	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['private_key'])" > $(ADMIN_CERT_DIR)/admin-tls.key && \
+	echo "$$CERT_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['issuing_ca'])" > $(ADMIN_CERT_DIR)/admin-ca.crt && \
+	chmod 600 $(ADMIN_CERT_DIR)/admin-tls.key && \
+	echo "Certificate written to $(ADMIN_CERT_DIR)/admin-tls.{crt,key,ca.crt} (valid 24h)"
+
 # nico-ssh-console-rs expects a pre-existing `ssh-host-key` Secret that no
 # chart in this repo creates.
 ensure-ssh-host-key:
@@ -443,10 +469,20 @@ ensure-ssh-host-key:
 	)
 
 deploy-site: ensure-ssh-host-key
+	@# extraDnsNames[0]: legacy DPU agent compatibility (issue #2823).
+	@# extraDnsNames[1]: passthrough route hostname so nico-admin-cli can
+	@#   connect via the route without TLS hostname mismatch (the server cert
+	@#   must include the route's FQDN in its SANs).
 	helm upgrade --install -n nico-system nico-core \
 		$(NICO_CORE_CHART) --wait --timeout 10m \
 		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) \
+		--set 'nico-api.certificate.extraDnsNames[0]=carbide-api.forge' \
+		--set 'nico-api.certificate.extraDnsNames[1]=nico-api-grpc-nico-system.$(CLUSTER_DOMAIN)' \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
+	@# Create a passthrough route for nico-admin-cli gRPC access (HTTP/2
+	@# requires passthrough — edge/reencrypt downgrades to HTTP/1.1).
+	@oc get route nico-api-grpc -n nico-system >/dev/null 2>&1 || \
+		oc create route passthrough nico-api-grpc --service=nico-api --port=grpc -n nico-system
 
 # Site configuration
 SITE_NAME ?=
