@@ -102,8 +102,16 @@ check-prereqs:
 	fi; \
 	if oc whoami >/dev/null 2>&1; then \
 		echo "  [OK]      oc is logged in to $$(oc whoami --show-server 2>/dev/null)"; \
+		SC=$$(oc get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{end}' 2>/dev/null); \
+		if [ -n "$$SC" ]; then \
+			echo "  [OK]      default StorageClass: $$SC"; \
+		else \
+			echo "  [MISSING] no default StorageClass — PG, Vault, NATS, and Temporal PVCs will fail"; \
+			MISSING=1; \
+		fi; \
 	else \
 		echo "  [MISSING] oc is not logged in to a cluster"; \
+		echo "            (skipping default StorageClass check)"; \
 		MISSING=1; \
 	fi; \
 	echo "" && \
