@@ -199,11 +199,37 @@ dig @<VIP> example.com   # DNS service
 
 ---
 
+## Constraint: L2 Adjacency Required (Zone Placement)
+
+**The OpenShift node and the DPU must be in the same network zone.**
+
+NICo uses MetalLB in L2 mode to announce the VIP on the dedicated VLAN. This
+requires the OpenShift node and the DPU data plane ports to be on the same L2
+segment — they must be reachable via the same switch fabric.
+
+Currently:
+- **OpenShift node** (ocp-qe-01): zone 5, VLAN 520 (10.6.141.0/24)
+- **DPU hardware** (nvd-srv-06): zone 7, rack i42
+
+The 10.6.140.0/24 subnet suggested for the dedicated VLAN is on the zone 5
+distribution switches. DPUs in i42 (zone 7) cannot be placed on a zone 5 VLAN
+— the switch fabrics do not span across zones at L2.
+
+**Resolution:** Deploy the OpenShift node (or a dedicated SNO) in zone 7 (i42),
+co-located with the DPU hardware, so both can share a dedicated VLAN on the
+zone 7 switches. The dedicated VLAN must be allocated from zone 7's available
+VLAN pool.
+
+---
+
 ## Questions for the Lab Team
 
-1. What VLAN ID and subnet can be allocated for the dedicated DPU data plane VLAN?
-2. Can the OpenShift node's switch port (ocp-qe-01) be converted to a trunk
-   carrying VLAN 520 (native) + the new VLAN (tagged)?
-3. Is there a gateway on the new VLAN that routes to 10.6.141.0/24 and 10.6.136.0/24?
-4. Are there any ACLs or port security policies that would block DHCP broadcasts
+1. What VLAN ID and subnet can be allocated for the dedicated DPU data plane
+   VLAN **in zone 7 (i42)**?
+2. Is there a bare-metal host available in zone 7 (i42) to run a Single-Node
+   OpenShift instance co-located with the DPU?
+3. Can the new OpenShift node's switch port be configured as a trunk carrying
+   the dedicated VLAN (tagged)?
+4. Is there a gateway on the new VLAN that routes to 10.6.136.0/24 (BMC network)?
+5. Are there any ACLs or port security policies that would block DHCP broadcasts
    or traffic from unknown MACs on the DPU switch ports?
