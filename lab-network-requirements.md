@@ -1,8 +1,9 @@
 # Lab Network Requirements for NICo DPU Onboarding
 
-**Date:** 2026-09-22
+**Date:** 2026-09-24
 **Cluster:** nico3 (apps.nico3.okoyl.xyz) — Single-Node OpenShift (SNO)
 **OpenShift node:** ocp-qe-01.ecosys.eng.rdu2.dc.redhat.com (10.6.141.100)
+**Host server:** nvd-srv-06.nvidia.eng.rdu2.dc.redhat.com (DPU installed here)
 
 ---
 
@@ -13,26 +14,68 @@ provisioning. The DPU data plane ports must have Layer 2 connectivity to NICo's
 DHCP, PXE, and DNS services running on the OpenShift cluster. Without this, NICo
 cannot provision the DPU or discover the host.
 
+**Critical:** NICo runs its own DHCP server. The DPU data plane must be on a
+VLAN where **only NICo's DHCP** responds — not the lab DHCP. If both DHCP servers
+are on the same L2 segment, they race and the DPU may boot with the wrong
+configuration. This is why we need a **dedicated VLAN** for the DPU data plane.
+
 ---
 
 ## Current Hardware
 
-| Device | BMC IP | BMC Network | Data Plane MACs |
-|---|---|---|---|
-| BlueField-3 DPU | 10.6.136.28 | OOB management | eth0: `02:de:1f:c2:c5:11`, eth1: `02:31:dd:95:f6:18` |
-| Dell PowerEdge R750 (host) | 10.6.136.44 | iDRAC management | N/A (PXE boots through DPU) |
-| OpenShift node (SNO) | 10.6.141.100 | cluster network | — |
+### Data plane — NEEDS DEDICATED VLAN (this request)
 
-The BMC management network (10.6.136.x) is already working — NICo can reach
-both BMCs via Redfish. What's missing is the **data plane** path.
+These interfaces must be on a **dedicated VLAN** where NICo is the only DHCP
+server. The OpenShift node must also have a presence on this VLAN (via a trunk
+port or second NIC) so MetalLB can announce the VIP.
+
+| Device | Interface | MAC | Switch port action |
+|---|---|---|---|
+| BlueField-3 DPU | eth0 (100G) | `02:de:1f:c2:c5:11` | Access port on dedicated VLAN |
+| BlueField-3 DPU | eth1 (100G) | `02:31:dd:95:f6:18` | Access port on dedicated VLAN |
+| OpenShift node (SNO) | eth0.VLAN (tagged) | 10.6.141.100 | Trunk port: add dedicated VLAN (tagged) |
+| MetalLB VIP | — | (to be allocated) | Announced from OpenShift node on this VLAN |
+
+The host server has no direct NIC on this VLAN — it PXE boots **through the
+DPU bridge** on eth0, so additional MACs (the host NIC) will appear on the
+DPU's switch port.
+
+### Management plane — ALREADY WORKING (no changes needed)
+
+| Device | Interface | MAC | IP | Status |
+|---|---|---|---|---|
+| BlueField-3 DPU | oob0 (BMC) | `a0:88:c2:75:91:8e` | 10.6.136.28 | Working |
+| BlueField-3 DPU | BMC Manager | `a0:88:c2:75:91:8f` | 10.6.136.28 | Working |
+| Dell PowerEdge R750 | iDRAC | `c8:4b:d6:86:f3:a0` | 10.6.136.44 | Working |
+
+NICo reaches both BMCs via Redfish over this network. No changes needed.
+BMCs stay on 10.6.136.x — they are **not** on the DPU data plane VLAN.
 
 ---
 
-## Request 1: IP Allocation (1 IP)
+## Request 1: Dedicated VLAN + IP Allocation
 
-NICo needs **1 static IP** on the same L2 segment as the DPU data plane ports.
-This IP will be assigned via MetalLB (L2 mode) and shared across all NICo
-bare-metal services — the services use different ports so there is no conflict.
+### Why a dedicated VLAN
+
+The OpenShift node is currently on VLAN 520 (10.6.141.0/24), which has a lab
+DHCP server. NICo runs its own DHCP server to assign IPs and boot URIs to
+DPUs and hosts during provisioning. If the DPU data plane ports are placed on
+VLAN 520, both DHCP servers respond to the DPU's requests — whichever answers
+first wins. If the lab DHCP wins, the DPU gets no boot URI, HTTP Boot fails,
+and NICo cannot provision it.
+
+A dedicated VLAN ensures NICo's DHCP is the **only** DHCP server the DPU sees.
+
+### What we need
+
+1. **A new VLAN** (or an existing one with no DHCP server) for the DPU data plane
+2. **A small subnet** on that VLAN (even a /28 is enough)
+3. **1 static IP** on that subnet for the MetalLB VIP — not in any DHCP pool
+4. **The OpenShift node's switch port trunked** to carry this VLAN (tagged),
+   in addition to VLAN 520 (untagged/native, existing)
+
+The VIP will be shared (via MetalLB L2 mode) across all NICo services — they
+use different ports so there is no conflict:
 
 | Service | Protocol | Port | Purpose | Required |
 |---|---|---|---|---|
@@ -42,61 +85,66 @@ bare-metal services — the services use different ports so there is no conflict
 | NICo API | TCP | 443 | Core gRPC API — DPU agent registers after boot | Yes |
 | NICo SSH Console | TCP | 22 | Operator console access to DPU/host | Optional |
 
-Since this is a **single-node OpenShift** cluster, all MetalLB VIPs resolve to
-the same physical host (10.6.141.100). The VIP must be a different IP from the
-node IP — MetalLB ARPs for it from the same NIC, but it needs its own address.
-
-**Requirements for the VIP:**
-- Must be on the same L2 segment (VLAN) as the DPU data plane ports
-- Must be on the same subnet as the node IP (10.6.141.100) or at least L2
-  reachable from the DPU
-- Must not be in any existing DHCP pool (static, managed by MetalLB)
-- Must not conflict with the node IP or any other host on the subnet
-
-Please provide the IP in this format:
+Please provide:
 
 ```
+VLAN ID:       ___
+Subnet:        10.x.x.0/___
 NICo VIP:      10.x.x.___
-Subnet mask:   ___.___.___.___ (e.g. 255.255.255.0)
-Gateway:       10.x.x.___ (if different subnet from 10.6.141.x)
-VLAN ID:       ___ (if applicable)
+Subnet mask:   ___.___.___.___ (e.g. 255.255.252.0)
+Gateway:       10.x.x.___ (for routing back to 10.6.141.x and 10.6.136.x)
 ```
 
 ---
 
 ## Request 2: Switch Configuration
 
-The DPU has two 100 Gbps data plane ports (eth0, eth1) connected to the lab switch.
-These ports need L2 connectivity to the OpenShift node where NICo services run.
-
-### What needs to happen
+### Network topology
 
 ```
-DPU eth0 (02:de:1f:c2:c5:11) ──┐
-                                ├── same VLAN / L2 segment ── OpenShift node (10.6.141.100)
-DPU eth1 (02:31:dd:95:f6:18) ──┘
+                VLAN 520 (10.6.141.x)              Dedicated VLAN (new)
+                existing, lab DHCP                  NICo DHCP only
+               ┌─────────────────────┐            ┌─────────────────────┐
+               │ Lab hosts           │            │                     │
+               │ Lab DHCP server     │            │ DPU eth0            │
+               │                     │            │ DPU eth1            │
+               │ OpenShift node ─────┼── trunk ───┼── MetalLB VIP      │
+               │  (10.6.141.100)     │            │  (NICo services)    │
+               └─────────────────────┘            └─────────────────────┘
+                        │ routed
+               ┌─────────────────────┐
+               │ BMC network         │
+               │ (10.6.136.x)        │
+               │ DPU BMC, Host iDRAC │
+               └─────────────────────┘
 ```
 
 ### Switch port configuration
 
-1. **DPU data plane ports** — the switch ports connected to the DPU's eth0 and eth1
-   must be on the same VLAN as (or trunked/routed to) the OpenShift node's network.
+1. **OpenShift node switch port** — trunk port carrying:
+   - VLAN 520 (untagged/native) — existing cluster traffic, no change
+   - Dedicated VLAN (tagged) — new, for DPU data plane + MetalLB VIP
 
-2. **DHCP traffic** — the DPU will send DHCP broadcasts (UDP 67/68) on this VLAN.
-   NICo's DHCP server (on the MetalLB VIP above) must receive these broadcasts.
-   If the DPU and the OpenShift node are on the **same VLAN**, this works automatically.
-   If they are on **different VLANs**, a DHCP relay (ip helper-address) is needed on the
-   DPU's VLAN, pointing to the NICo VIP.
+2. **DPU eth0 and eth1 switch ports** — access ports on the dedicated VLAN:
+   - MAC `02:de:1f:c2:c5:11` (eth0)
+   - MAC `02:31:dd:95:f6:18` (eth1)
 
-3. **No port security / MAC filtering** on the DPU data plane ports — the DPU will
-   bridge traffic from the host server through its data plane, so multiple MAC addresses
-   will appear on the same switch port.
+3. **No port security / MAC filtering** on the DPU switch ports — the DPU
+   bridges traffic from the host server through its data plane, so multiple
+   MAC addresses will appear on the same switch port.
+
+4. **No DHCP snooping** on the dedicated VLAN, or if enabled, mark the
+   OpenShift node's port as a trusted DHCP source (NICo's DHCP runs there).
+
+5. **Routing** — the dedicated VLAN needs a gateway that can route to:
+   - 10.6.141.0/24 (cluster network, for return traffic to OpenShift)
+   - 10.6.136.0/24 (BMC network — optional, useful for debugging)
 
 ### Traffic flows once configured
 
 ```
-                    L2 (same VLAN)
-DPU eth0 ──────────────────────────────── OpenShift node
+                 Dedicated VLAN (L2)
+DPU eth0 ──────────────────────────────── OpenShift node (tagged)
    │                                          │
    │  1. DHCP broadcast (UDP 67)              │  MetalLB VIP answers
    │  2. HTTP Boot (TCP 8080 to VIP)          │  PXE serves BFB image
@@ -122,15 +170,28 @@ No changes needed on the BMC/management network.
 
 ---
 
+## OpenShift Node Configuration (our side, after lab completes above)
+
+Once the lab team provides the VLAN ID and subnet, we will:
+
+1. Configure a VLAN-tagged subinterface on the OpenShift node (e.g. `eth0.XXX`)
+2. Install the MetalLB operator and configure an IPAddressPool with the VIP
+3. Redeploy NICo site services with `make deploy-site SITE_VIP=<allocated-ip>`
+
+---
+
 ## Verification After Setup
 
 Once the switch is configured and the VIP is allocated, we can verify with:
 
 ```bash
-# From the OpenShift node, ping the DPU data plane (after DPU gets a DHCP lease)
-# The DPU eth0 should get an IP from NICo DHCP on the allocated subnet
+# From the OpenShift node, verify the VLAN subinterface is up
+ip addr show eth0.<VLAN_ID>
 
-# From the DPU (once booted), verify it can reach the MetalLB VIP:
+# From a pod on the dedicated VLAN, verify MetalLB VIP is reachable
+ping <VIP>
+
+# After DPU gets a DHCP lease from NICo, verify from the DPU:
 ping <VIP>
 curl http://<VIP>:8080   # PXE service
 dig @<VIP> example.com   # DNS service
@@ -140,9 +201,9 @@ dig @<VIP> example.com   # DNS service
 
 ## Questions for the Lab Team
 
-1. Which VLAN is the OpenShift node (10.6.141.100) on?
-2. Can the DPU data plane ports be placed on the same VLAN?
-3. If not the same VLAN, can a DHCP relay be configured between VLANs?
+1. What VLAN ID and subnet can be allocated for the dedicated DPU data plane VLAN?
+2. Can the OpenShift node's switch port (ocp-qe-01) be converted to a trunk
+   carrying VLAN 520 (native) + the new VLAN (tagged)?
+3. Is there a gateway on the new VLAN that routes to 10.6.141.0/24 and 10.6.136.0/24?
 4. Are there any ACLs or port security policies that would block DHCP broadcasts
    or traffic from unknown MACs on the DPU switch ports?
-5. What IP is available for the MetalLB VIP (1 unused IP on the same L2)?
