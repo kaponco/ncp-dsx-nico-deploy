@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Red Hat, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The nico-dns external service template hardcodes targetPort: 53 alongside
+# port: 53. Our nico-dns binds :5353 (CAP_NET_BIND_SERVICE doesn't propagate
+# to CapEff on this cluster's CRI-O). Rewrite targetPort so the external
+# LoadBalancer exposes :53 to DPU clients but forwards to :5353 in the pod.
+- op: replace
+  path: /spec/ports/0/targetPort
+  value: 5353

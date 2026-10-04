@@ -117,11 +117,9 @@ nico-dhcp:
       # per-cluster; the machine-a-tron overlay (nico-core-mat.yaml) carries
       # example values for the emulated flow.
       hookParameters:
-        nameservers: "172.30.57.9"
-        # nico-ntp is disabled; reuse nico-dns's IP — just needs to parse
-        # as valid IPv4, nothing here depends on a real NTP server.
-        ntpServer: "172.30.57.9"
-        provisioningServer: "172.30.103.117"
+        nameservers: "REPLACE_WITH_NICO_DNS_VIP"
+        ntpServer: "REPLACE_WITH_NICO_NTP_VIPS"
+        provisioningServer: "REPLACE_WITH_NICO_PXE_VIP"
       # subnet4[].id isn't emitted by this chart at all; auto-numbered
       # post-render instead (helm/plugins/kustomize-post-renderer/render.sh).
       # Kea 3.0.4 requires it; upstream's own Kea 2.2.0 auto-assigns it and

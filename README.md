@@ -112,8 +112,17 @@ Installs the upstream `nico` chart with values overrides and kustomize
 patches (Crunchy secret keys, SCC fixes, migration fixes).
 
 ```bash
-make deploy-site
+make deploy-site SITE_VIP=<metallb-vip>
 ```
+
+`SITE_VIP` is **required**. It is the MetalLB VIP that fronts the bare-metal
+services (DHCP, DNS, PXE): `deploy-site` enables `externalService` on all three
+subcharts, shares the one address between them via MetalLB's
+`allow-shared-ip`, and wires Kea's `nameservers` / `provisioningServer` hook
+parameters to it so provisioned DPUs and hosts can reach DNS and PXE. Without
+it the shipped `REPLACE_WITH_*` placeholders in `nico-core.yaml` would reach
+Kea, so the target refuses to run — as do `deploy-all-site` and
+`deploy-all-site-crc`, which abort before deploying any infrastructure.
 
 `deploy-site` layers a site-config overlay onto `nico-core.yaml`. The base
 disables `siteConfig` (no resource pools) so it never silently ships RBAC
@@ -124,14 +133,12 @@ bypasses — but Core exits without pools, so a config is always supplied:
 - **`make deploy-site MAT=1`** → `helm/values/nico-core-mat.yaml`
   (machine-a-tron emulator: pools **plus** bypass flags — test/dev only).
 
-> **Per-cluster values.** Two settings in these files are cluster-specific and
-> must be set for the target cluster before onboarding real hardware:
-> the DHCP hook IPs in `nico-core.yaml` (`nameservers` / `provisioningServer`
-> must be *this* cluster's `nico-dns` / `nico-pxe` ClusterIPs —
-> `oc get svc nico-dns nico-pxe -n nico-system`), and the network/pool ranges
-> in the site-config overlay. The shipped values are valid placeholders so the
-> stack comes up on any cluster with no hardware attached, but PXE/discovery
-> will use stale addresses until you set the real ones.
+> **Per-cluster values.** `SITE_VIP` covers the DHCP hook IPs, but the
+> network and pool ranges in the site-config overlay are still cluster-specific
+> and must be set for the target cluster before onboarding real hardware. The
+> shipped ranges are valid placeholders so the stack comes up on any cluster
+> with no hardware attached, but discovery will use stale addresses until you
+> set the real ones.
 
 ### 7. Register a Site and Deploy Site-Agent
 
@@ -149,7 +156,7 @@ make deploy-site-agent SITE_ID=<existing-uuid>
 
 ```bash
 make deploy-all-cloud          # steps 1-3 + patch-keycloak-route + bootstrap-org
-make deploy-all-site           # steps 4-7 (without site-agent)
+make deploy-all-site SITE_VIP=<metallb-vip>   # steps 4-7 (without site-agent)
 ```
 
 ### Status

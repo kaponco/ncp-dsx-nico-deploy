@@ -5,7 +5,7 @@
 .PHONY: docker-build-ubi docker-push-ubi docker-build-core docker-push-core docker-build-nicocli docker-push-nicocli helm-dep-build helm-lint helm-template
 .PHONY: build-machine-a-tron bootstrap-machine-a-tron machine-a-tron-status
 .PHONY: deploy-prereqs deploy-cloud-infra deploy-cloud
-.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key deploy-site deploy-site-agent deploy-flow
+.PHONY: deploy-site-infra vault-init vault-admin-cert ensure-ssh-host-key require-site-vip deploy-site deploy-site-agent deploy-flow
 .PHONY: deploy-all-cloud patch-keycloak-route bootstrap-org deploy-all-site status undeploy
 .PHONY: reset-dpu-endpoint
 
@@ -43,6 +43,27 @@ MAT_VALUES_FLAG := $(if $(MAT),-f $(MAT_VALUES),)
 # Override with SITE_VALUES=<file> for a site-specific config.
 SITE_VALUES ?= helm/values/nico-core-site.yaml
 SITE_CONFIG_FLAG := $(if $(MAT),-f $(MAT_VALUES),-f $(SITE_VALUES))
+
+# MetalLB VIP for NICo bare-metal services (DHCP, DNS, PXE). REQUIRED by
+# deploy-site: it enables externalService on all three subcharts with the VIP
+# shared via allow-shared-ip, and wires the DHCP hook parameters so
+# provisioned DPUs/hosts can reach DNS and PXE at this address. Without it the
+# chart would ship the REPLACE_WITH_* placeholders from
+# helm/values/nico-core.yaml into Kea's hook parameters.
+# Usage: make deploy-site SITE_VIP=10.6.141.x
+SITE_VIP ?=
+SITE_VIP_FLAGS := \
+	--set nico-dhcp.externalService.enabled=true \
+	--set 'nico-dhcp.externalService.annotations.metallb\.universe\.tf/loadBalancerIPs=$(SITE_VIP)' \
+	--set 'nico-dhcp.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip' \
+	--set nico-dhcp.config.kea.hookParameters.nameservers=$(SITE_VIP) \
+	--set nico-dhcp.config.kea.hookParameters.provisioningServer=$(SITE_VIP) \
+	--set nico-dns.externalService.enabled=true \
+	--set 'nico-dns.externalService.perPodAnnotations[0].metallb\.universe\.tf/loadBalancerIPs=$(SITE_VIP)' \
+	--set 'nico-dns.externalService.perPodAnnotations[0].metallb\.universe\.tf/allow-shared-ip=nico-site-vip' \
+	--set nico-pxe.externalService.enabled=true \
+	--set 'nico-pxe.externalService.annotations.metallb\.universe\.tf/loadBalancerIPs=$(SITE_VIP)' \
+	--set 'nico-pxe.externalService.annotations.metallb\.universe\.tf/allow-shared-ip=nico-site-vip'
 
 # Vault topology auto-selection. HA (3-node Raft) needs >=3 schedulable nodes;
 # a single-node (SNO/VM) or 2-node cluster falls back to standalone Vault (file
@@ -480,7 +501,15 @@ ensure-ssh-host-key:
 			--from-file=ssh_host_ed25519_key_pub="$$TMPDIR/ssh_host_ed25519_key.pub" \
 	)
 
-deploy-site: ensure-ssh-host-key
+# Guard listed first on every target that reaches deploy-site, so the chain
+# aborts before deploy-site-infra/vault-init do any work.
+require-site-vip:
+ifndef SITE_VIP
+	$(error SITE_VIP is required. Usage: make $(MAKECMDGOALS) SITE_VIP=<metallb-vip>)
+endif
+	@:
+
+deploy-site: require-site-vip ensure-ssh-host-key
 	@# extraDnsNames[0]: legacy DPU agent compatibility (issue #2823).
 	@# extraDnsNames[1]: passthrough route hostname so nico-admin-cli can
 	@#   connect via the route without TLS hostname mismatch (the server cert
@@ -490,6 +519,7 @@ deploy-site: ensure-ssh-host-key
 		-f helm/values/nico-core.yaml $(SITE_CONFIG_FLAG) \
 		--set 'nico-api.certificate.extraDnsNames[0]=carbide-api.forge' \
 		--set 'nico-api.certificate.extraDnsNames[1]=nico-api-grpc-nico-system.$(CLUSTER_DOMAIN)' \
+		$(SITE_VIP_FLAGS) \
 		--post-renderer $(POST_RENDERER) --post-renderer-args $(SITE_KUSTOMIZE)
 	@# Create a passthrough route for nico-admin-cli gRPC access (HTTP/2
 	@# requires passthrough — edge/reencrypt downgrades to HTTP/1.1).
@@ -564,7 +594,7 @@ deploy-flow:
 		$(NICO_FLOW_CHART) --wait --timeout 5m \
 		-f helm/values/nico-core.yaml $(MAT_VALUES_FLAG)
 
-deploy-all-site: deploy-site-infra vault-init deploy-site deploy-flow
+deploy-all-site: require-site-vip deploy-site-infra vault-init deploy-site deploy-flow
 
 # =============================================================================
 # CRC (single-node) — overrides for local development on CodeReady Containers
@@ -587,7 +617,7 @@ deploy-site-infra-crc: helm-dep-build
 		$(CRC_VAULT_OVERRIDES)
 
 deploy-all-cloud-crc: deploy-prereqs deploy-cloud-infra-crc deploy-cloud
-deploy-all-site-crc: deploy-site-infra-crc vault-init deploy-site deploy-flow
+deploy-all-site-crc: require-site-vip deploy-site-infra-crc vault-init deploy-site deploy-flow
 
 # =============================================================================
 # Status and Cleanup

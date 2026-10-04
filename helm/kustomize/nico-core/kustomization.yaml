@@ -99,3 +99,14 @@ patches:
     target:
       kind: Service
       name: nico-dns
+
+  # Same targetPort fix for the DNS external LoadBalancer services (MetalLB).
+  # The external service template hardcodes targetPort: 53; rewrite to 5353.
+  - path: patches/fix-dns-external-service-port.yaml
+    target:
+      kind: Service
+      name: nico-dns-external-udp-0
+  - path: patches/fix-dns-external-service-port.yaml
+    target:
+      kind: Service
+      name: nico-dns-external-tcp-0
